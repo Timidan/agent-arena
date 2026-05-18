@@ -18,13 +18,20 @@
 import { isSelfLoop } from './self-loop-guard.js';
 import {
   fetchInteractionsSinceBlock,
+  fetchChainTipBlock,
   resolveHandle,
   decodeRequestCoverageArgs,
   type Interaction,
 } from './indexer.js';
-import { getLastSeenBlock, setLastSeenBlock } from './checkpoint.js';
+import {
+  getLastSeenBlock,
+  setLastSeenBlock,
+  alreadyProcessed,
+  recordProcessed,
+  recordFailed,
+} from './checkpoint.js';
 import { postChatAsApplication, markCovered } from './chat.js';
-import { refreshVoucher } from './voucher.js';
+import { ensureFresh } from './voucher.js';
 import {
   narrateMarketResolved,
   narrateBountyCompleted,
@@ -187,34 +194,75 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
   const operatorHex = process.env.OPERATOR_HEX ?? '';
   const appHex = process.env.APP_HEX ?? '';
 
-  console.log('[watcher] Starting AAN-TV commentator watcher');
-  console.log(`[watcher] APP_HEX: ${appHex}`);
-  console.log(`[watcher] OPERATOR_HEX: ${operatorHex}`);
-  console.log(`[watcher] Poll interval: ${opts.intervalMs}ms`);
+  console.log('[aan-tv] Starting AAN-TV commentator watcher');
+  console.log(`[aan-tv] APP_HEX: ${appHex}`);
+  console.log(`[aan-tv] OPERATOR_HEX: ${operatorHex}`);
+  console.log(`[aan-tv] Poll interval: ${opts.intervalMs}ms`);
+
+  // Fix 3: Cold-start backfill — if checkpoint is 0 (fresh DB), seed to
+  // chain tip - 100 so first tick processes recent history instead of all
+  // network history from genesis.
+  {
+    const existingBlock = getLastSeenBlock();
+    if (existingBlock === 0) {
+      try {
+        const tipBlock = await fetchChainTipBlock();
+        const seedBlock = Math.max(0, tipBlock - 100);
+        setLastSeenBlock(seedBlock);
+        console.log(
+          `[aan-tv] cold start: seeding checkpoint to block ${seedBlock} (chain tip ${tipBlock} - 100)`,
+        );
+      } catch (err) {
+        console.warn('[aan-tv] cold-start tip fetch failed; starting from block 0:', err);
+      }
+    }
+  }
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const loopStart = Date.now();
 
     try {
-      // 1. Refresh voucher
+      // 1. Fix 4: ensureFresh() before EVERY tick — always GETs voucher state
+      // (free/read-only), POSTs top-up only if balance is low or voucher
+      // missing. If this throws (network error, no voucher), skip the tick
+      // entirely — do NOT advance checkpoint.
+      let voucherId: string;
       try {
-        const voucherId = await refreshVoucher();
-        console.log(`[watcher] Voucher OK: ${voucherId.slice(0, 16)}…`);
+        voucherId = await ensureFresh();
+        console.log(`[aan-tv] Voucher OK: ${voucherId.slice(0, 16)}…`);
       } catch (err) {
-        console.error('[watcher] Voucher refresh failed (continuing):', err);
+        console.error('[aan-tv] Voucher ensureFresh failed — skipping tick:', err);
+        const elapsed = Date.now() - loopStart;
+        await new Promise<void>((r) => setTimeout(r, Math.max(0, opts.intervalMs - elapsed)));
+        continue;
       }
 
-      // 2. Fetch interactions since last seen block
+      // 2. Fetch interactions since last seen block.
+      //
+      // Fix 5 (partial): limit=50. If 50+ interactions land in a single block,
+      // we miss the tail beyond position 50 in that block. Formal cursor-based
+      // pagination (tracking lastSeenBlock + lastSeenInteractionId together) is
+      // the full fix but requires indexer support for compound ordering filters.
+      // TODO: implement cursor pagination when indexer exposes a stable cursor.
+      // For now, bumping the limit reduces but does not eliminate the risk.
       const sinceBlock = getLastSeenBlock();
       const interactions = await fetchInteractionsSinceBlock(sinceBlock, 50);
-      console.log(`[watcher] Fetched ${interactions.length} interactions since block ${sinceBlock}`);
+      console.log(`[aan-tv] Fetched ${interactions.length} interactions since block ${sinceBlock}`);
 
       let maxBlock = sinceBlock;
 
       for (const interaction of interactions) {
         if (interaction.blockNumber > maxBlock) {
           maxBlock = interaction.blockNumber;
+        }
+
+        // Fix 2: Per-interaction dedup — skip if already narrated.
+        // alreadyProcessed() checks the processed_interactions SQLite table,
+        // written BEFORE checkpoint advance, so restarts after a crash are safe.
+        if (alreadyProcessed(interaction.id)) {
+          console.log(`[aan-tv] Skipping already-processed interaction ${interaction.id}`);
+          continue;
         }
 
         // 3a. Self-loop guard — never narrate events touching operator wallet
@@ -224,7 +272,9 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
             operatorHex,
           )
         ) {
-          console.log(`[watcher] Skipping self-loop interaction ${interaction.id}`);
+          console.log(`[aan-tv] Skipping self-loop interaction ${interaction.id}`);
+          // Record as "processed" so self-loops aren't reconsidered on restart
+          recordFailed(interaction.id, 'self-loop: skipped');
           continue;
         }
 
@@ -233,7 +283,7 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
           interaction.methodName === 'RequestCoverage' &&
           interaction.toApplicationId.toLowerCase() === appHex.toLowerCase()
         ) {
-          console.log(`[watcher] Coverage request from ${interaction.fromActor}`);
+          console.log(`[aan-tv] Coverage request from ${interaction.fromActor}`);
 
           const { eventKind, targetProgram, hint } = decodeRequestCoverageArgs(
             interaction.argsJson,
@@ -250,26 +300,26 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
             targetHex: targetProgram ?? undefined,
           });
 
-          console.log(`[watcher] Posting coverage narration: ${post.body.slice(0, 60)}…`);
+          console.log(`[aan-tv] Posting coverage narration: ${post.body.slice(0, 60)}…`);
 
           try {
             const result = await postChatAsApplication(post);
-            console.log(`[watcher] Chat posted: msgId=${result.msgId} txHash=${result.txHash}`);
+            console.log(`[aan-tv] Chat posted: msgId=${result.msgId} txHash=${result.txHash}`);
 
-            // Derive coverage_id from the interaction: argsJson may not directly
-            // contain it (it's the return value of RequestCoverage). We use a
-            // best-effort approach: if the indexer includes a coverage_id in a
-            // result field we can parse it; otherwise we skip markCovered and
-            // log a warning. This is a known limitation — full coverage_id
-            // tracking requires a Sails typed read (GetCoverageQueue) which is
-            // deferred to post-MVP integration.
+            // Fix 2: Record before advancing checkpoint
+            recordProcessed(interaction.id, result.msgId, result.txHash);
+
+            // coverage_id is not available from argsJson alone — it's the
+            // return value of RequestCoverage. MarkCovered skipped until a
+            // Sails typed read (GetCoverageQueue) is integrated post-MVP.
             console.log(
-              '[watcher] NOTE: coverage_id not available from interaction argsJson alone.' +
-                ' MarkCovered skipped for this interaction — see indexer.ts comment.' +
+              '[aan-tv] NOTE: coverage_id not available from interaction argsJson alone.' +
+                ' MarkCovered skipped — see indexer.ts comment.' +
                 ` eventKind=${eventKind} hint="${hint}"`,
             );
           } catch (err) {
-            console.error('[watcher] Failed to post coverage narration:', err);
+            console.error('[aan-tv] Failed to post coverage narration:', err);
+            recordFailed(interaction.id, String(err));
           }
 
           continue;
@@ -279,7 +329,7 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
         const kind = looksInteresting(interaction);
         if (kind) {
           console.log(
-            `[watcher] Interesting interaction: ${interaction.methodName} on ${interaction.toApplicationId.slice(0, 16)}… kind=${kind}`,
+            `[aan-tv] Interesting interaction: ${interaction.methodName} on ${interaction.toApplicationId.slice(0, 16)}… kind=${kind}`,
           );
 
           try {
@@ -287,28 +337,41 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
             if (post) {
               const result = await postChatAsApplication(post);
               console.log(
-                `[watcher] Organic narration posted: msgId=${result.msgId} kind=${kind}`,
+                `[aan-tv] Organic narration posted: msgId=${result.msgId} kind=${kind}`,
               );
+              // Fix 2: Record before advancing checkpoint
+              recordProcessed(interaction.id, result.msgId, result.txHash);
+            } else {
+              // narrateInteraction returned null (no template matched) — skip silently
+              recordFailed(interaction.id, 'no narration template matched');
             }
           } catch (err) {
-            console.error('[watcher] Failed to post organic narration:', err);
+            console.error('[aan-tv] Failed to post organic narration:', err);
+            recordFailed(interaction.id, String(err));
           }
+        } else {
+          // Interaction is not interesting — record as skipped so it's never
+          // reconsidered on restart (saves redundant DB lookups for boring events).
+          recordFailed(interaction.id, 'not-interesting: skipped');
         }
       }
 
-      // 4. Advance checkpoint
+      // 4. Advance checkpoint AFTER all per-item inserts to processed_interactions.
+      // Per Fix 2: even if the process crashes between the last recordProcessed()
+      // and this setLastSeenBlock(), the next restart re-fetches the batch but
+      // alreadyProcessed() gates each item, so no duplicate narration occurs.
       if (maxBlock > sinceBlock) {
         setLastSeenBlock(maxBlock);
-        console.log(`[watcher] Checkpoint advanced to block ${maxBlock}`);
+        console.log(`[aan-tv] Checkpoint advanced to block ${maxBlock}`);
       }
     } catch (err) {
-      console.error('[watcher] Loop error (will retry):', err);
+      console.error('[aan-tv] Loop error (will retry):', err);
     }
 
     // 5. Sleep
     const elapsed = Date.now() - loopStart;
     const sleepMs = Math.max(0, opts.intervalMs - elapsed);
-    console.log(`[watcher] Sleeping ${sleepMs}ms`);
+    console.log(`[aan-tv] Sleeping ${sleepMs}ms`);
     await new Promise<void>((r) => setTimeout(r, sleepMs));
   }
 }
