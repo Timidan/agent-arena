@@ -111,6 +111,36 @@ export async function fetchInteractionsSinceBlock(
   }));
 }
 
+// ── fetchChainTipBlock ────────────────────────────────────────────────────
+
+const CHAIN_TIP_QUERY = gql`
+  query ChainTip {
+    allInteractions(first: 1, orderBy: SUBSTRATE_BLOCK_NUMBER_DESC) {
+      nodes {
+        substrateBlockNumber
+      }
+    }
+  }
+`;
+
+interface ChainTipQueryResult {
+  allInteractions: {
+    nodes: { substrateBlockNumber: number }[];
+  };
+}
+
+/**
+ * Returns the highest block number currently in the indexer.
+ * Used for cold-start seeding: watcher sets lastSeenBlock = tipBlock - 100
+ * instead of 0, so the first tick processes only ~100 blocks of recent
+ * history rather than the entire network history since genesis.
+ */
+export async function fetchChainTipBlock(): Promise<number> {
+  const data = await client().request<ChainTipQueryResult>(CHAIN_TIP_QUERY);
+  const tip = data.allInteractions.nodes[0]?.substrateBlockNumber ?? 0;
+  return tip;
+}
+
 // ── fetchCoverageQueueSince ───────────────────────────────────────────────
 // We rely on allInteractions filtered by our APP_HEX + RequestCoverage to
 // discover paid coverage requests, then decode argsJson defensively.
