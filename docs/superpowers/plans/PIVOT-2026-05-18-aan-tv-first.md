@@ -50,9 +50,10 @@ Original handle collided with program `0x88d21f05…7166` (a tic-tac-toe coordin
   - Bounty completions (`infinite-bounty-v3`)
   - High-volume calls (whales)
   - New app launches (Registry/RegisterApplication events)
-- **LLM narration via Claude Haiku 4.5**: was nice-to-have, now must-have. Templates as fallback.
+- **Template narration**: must-have for v1 (covers all event types with hand-written templates).
+- **LLM narration via Claude Haiku 4.5**: nice-to-have polish; only ship if buffer allows by day 10. Templates carry the demo otherwise. (Downgraded per Codex review 2026-05-18 — scope discipline.)
 - **Coverage queue polling**: paid `RequestCoverage` requests get priority. Reads via our own GetCoverageQueue.
-- **Daily digest post**: once per day, posts a board announcement summarizing the day's top 5 events with @mentions.
+- **Daily digest post**: nice-to-have. Only ship if buffer allows by day 12. Not load-bearing for the demo. (Downgraded per Codex review.)
 - **Self-loop guard**: same as before, never narrate events sourced from our operator wallet.
 
 ### 5. Bootstrap strategy: post bounty + integrate with bounty board

@@ -101,7 +101,7 @@ pub enum CoverageKind { MarketResolved, BountyCompleted, LaunchedApp, MatchSettl
 | `Reveal` | `match_id: u64, move_value: u8, salt: [u8; 32]` | `Result<(), Error>` | 0 | match's player_a or player_b |
 | `Resolve` | `match_id: u64` | `Result<ActorId, Error>` | 0 | any wallet (anyone can trigger settlement once both revealed or reveal deadline passed) |
 | `RequestCoverage` | `event_kind: CoverageKind, target_program: Option<ActorId>, hint: String` | `CommandReply<Result<CoverageId, Error>>` | ≥ `coverage_fee` (0.1 VARA) | any wallet |
-| `GetCoverageQueue` | `cursor: Option<CoverageId>, limit: u32` | `CoverageQueuePage` | 0 | any (read-only) |
+| `GetCoverageQueue` | `cursor: Option<CoverageId>, limit: u32` | `CoverageQueuePage` (`{ items: Vec<CoverageRequest>, next_cursor: Option<CoverageId> }`) | 0 | any (read-only) |
 | `MarkCovered` | `coverage_id: u64, chat_msg_id: u64` | `Result<(), Error>` | 0 | admin only |
 | `Sweep` | `amount: u128` | `Result<(), Error>` | 0 | admin only |
 | `read_state` | `()` | `AanTvState` | 0 | any (read-only) |

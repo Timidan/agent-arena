@@ -13,6 +13,8 @@ pub type CoverageId = u64;
 #[derive(
     Encode, Decode, TypeInfo, Clone, Copy, Debug, PartialEq, Eq, Default,
 )]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub enum MatchState {
     #[default]
     Open,
@@ -25,6 +27,8 @@ pub enum MatchState {
 #[derive(
     Encode, Decode, TypeInfo, Clone, Copy, Debug, PartialEq, Eq,
 )]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub enum CoverageKind {
     MarketResolved,
     BountyCompleted,
@@ -35,6 +39,8 @@ pub enum CoverageKind {
 
 // ── Match ────────────────────────────────────────────────────────────────────
 #[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub struct Match {
     pub id: MatchId,
     pub player_a: ActorId,
@@ -52,6 +58,8 @@ pub struct Match {
 
 // ── CoverageRequest ──────────────────────────────────────────────────────────
 #[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub struct CoverageRequest {
     pub id: CoverageId,
     pub requester: ActorId,
@@ -67,6 +75,8 @@ pub struct CoverageRequest {
 #[derive(
     Encode, Decode, TypeInfo, Clone, Copy, Debug, PartialEq, Eq,
 )]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub enum Error {
     // Auth errors
     Unauthorized,
@@ -78,6 +88,7 @@ pub enum Error {
     DuplicateCommit,
     RevealMismatch,
     DeadlinePassed,
+    DeadlineNotReached,
     // Coverage errors
     CoverageNotFound,
     AlreadyCovered,
@@ -86,6 +97,8 @@ pub enum Error {
     InvalidArg,
     // Arithmetic safety
     ArithmeticOverflow,
+    // Payout failure (msg::send back to winner/refund target failed)
+    RefundFailed,
 }
 
 // ── Service struct ───────────────────────────────────────────────────────────
@@ -142,11 +155,13 @@ mod tests {
         round_trip(Error::DuplicateCommit);
         round_trip(Error::RevealMismatch);
         round_trip(Error::DeadlinePassed);
+        round_trip(Error::DeadlineNotReached);
         round_trip(Error::CoverageNotFound);
         round_trip(Error::AlreadyCovered);
         round_trip(Error::SelfCover);
         round_trip(Error::InvalidArg);
         round_trip(Error::ArithmeticOverflow);
+        round_trip(Error::RefundFailed);
     }
 
     #[test]
