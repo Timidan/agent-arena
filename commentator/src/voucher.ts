@@ -7,9 +7,20 @@
  *   - Reuse existing while balanceKnown=true and varaBalance >= 10 VARA
  *   - If balanceKnown=false, do NOT treat as drained — reuse existing voucher
  *   - Never spend wallet's own VARA for gas
+ *
+ * Fix 4: ensureFresh() is the new primary entry point. It ALWAYS GETs current
+ * state (the GET is free / read-only) and only POSTs if balance is low or
+ * the voucher is missing/unconfigured. The watcher calls ensureFresh() at the
+ * start of EVERY tick — not on a 55-minute timer — so block-height-based
+ * expiry is caught promptly. If ensureFresh() throws, the caller (watcher)
+ * must skip the tick and not advance the checkpoint.
+ *
+ * refreshVoucher() is kept as an alias for backward compat but is no longer
+ * called from the main loop.
  */
 
-const LOW_BALANCE_PLANCK = 10_000_000_000_000n; // 10 VARA in planck
+// 10 VARA in planck (voucher balance threshold triggering a top-up POST)
+const LOW_BALANCE_PLANCK = 10_000_000_000_000n;
 
 interface VoucherState {
   voucherId: string | null;
@@ -19,10 +30,6 @@ interface VoucherState {
   nextTopUpEligibleAt: string | null;
   programs: string[];
 }
-
-let cachedVoucherId: string | null = null;
-let lastFetchedMs = 0;
-const REFRESH_INTERVAL_MS = 55 * 60 * 1000; // 55 minutes (vouchers valid 24h, top-up hourly)
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -40,25 +47,22 @@ async function fetchJson(url: string, options?: RequestInit): Promise<unknown> {
 }
 
 /**
- * Refresh the voucher if stale or missing.
- * Returns the current VOUCHER_ID (cached or freshly fetched).
- * Also sets process.env.VOUCHER_ID for subsequent vara-wallet calls in this session.
+ * Ensure the voucher is valid and the balance is above LOW_BALANCE_PLANCK.
+ * ALWAYS performs a GET to read the current state — the GET is free.
+ * Only POSTs (top-up) if the balance is below threshold or the voucher is
+ * missing/unconfigured. Sets process.env.VOUCHER_ID on success.
+ *
+ * Throws on network error or if no valid voucher can be obtained.
+ * The watcher must skip the tick if this throws.
  */
-export async function refreshVoucher(): Promise<string> {
-  const now = Date.now();
-
-  // Return cached value if fresh
-  if (cachedVoucherId && now - lastFetchedMs < REFRESH_INTERVAL_MS) {
-    return cachedVoucherId;
-  }
-
+export async function ensureFresh(): Promise<string> {
   const voucherUrl = requireEnv('VOUCHER_URL');
   const operatorHex = requireEnv('OPERATOR_HEX');
   const pid = requireEnv('PID');
 
   const stateUrl = `${voucherUrl}/${operatorHex}`;
 
-  // GET first — read-only
+  // Always GET — read-only, free
   const state = (await fetchJson(stateUrl)) as VoucherState;
 
   const voucherId = state.voucherId;
@@ -69,14 +73,11 @@ export async function refreshVoucher(): Promise<string> {
 
   const needsTopUp = balanceKnown && varaBalance < LOW_BALANCE_PLANCK;
 
-  const shouldPost =
-    !voucherId || !hasPid || (needsTopUp && canTopUpNow);
+  const shouldPost = !voucherId || !hasPid || (needsTopUp && canTopUpNow);
 
   if (!shouldPost) {
-    // Reuse existing
+    // Existing voucher is healthy — just set env and return
     if (!voucherId) throw new Error('Voucher backend returned no voucherId and POST not needed');
-    cachedVoucherId = voucherId;
-    lastFetchedMs = now;
     process.env.VOUCHER_ID = voucherId;
     return voucherId;
   }
@@ -86,18 +87,16 @@ export async function refreshVoucher(): Promise<string> {
   let newVoucherId: string | null = null;
 
   try {
-    const resp = await fetchJson(voucherUrl, {
+    const resp = (await fetchJson(voucherUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-    }) as { voucherId?: string };
+    })) as { voucherId?: string };
     newVoucherId = resp.voucherId ?? null;
   } catch (err) {
     // 429 = rate-limited; reuse existing if we have one
     if (voucherId) {
       console.warn('[voucher] POST rate-limited; reusing existing voucher:', voucherId);
-      cachedVoucherId = voucherId;
-      lastFetchedMs = now;
       process.env.VOUCHER_ID = voucherId;
       return voucherId;
     }
@@ -105,10 +104,8 @@ export async function refreshVoucher(): Promise<string> {
   }
 
   if (!newVoucherId) {
-    // Fall back to existing if POST didn't return one
+    // Fall back to existing if POST didn't return a new one
     if (voucherId) {
-      cachedVoucherId = voucherId;
-      lastFetchedMs = now;
       process.env.VOUCHER_ID = voucherId;
       return voucherId;
     }
@@ -121,8 +118,14 @@ export async function refreshVoucher(): Promise<string> {
     );
   }
 
-  cachedVoucherId = newVoucherId;
-  lastFetchedMs = now;
   process.env.VOUCHER_ID = newVoucherId;
   return newVoucherId;
+}
+
+/**
+ * @deprecated Use ensureFresh() instead.
+ * Kept for backward compatibility — delegates to ensureFresh().
+ */
+export async function refreshVoucher(): Promise<string> {
+  return ensureFresh();
 }
