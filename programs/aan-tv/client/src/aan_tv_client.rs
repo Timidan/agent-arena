@@ -48,6 +48,16 @@ pub mod aan_tv {
             &mut self,
             match_id: u64,
         ) -> sails_rs::client::PendingCall<io::AcceptMatch, Self::Env>;
+        /// Commit a SHA-256 commitment for the caller's move. Free — no msg::value required.
+        ///
+        /// Can only be called while the match is in `InCommit` state and before
+        /// `commit_deadline_block`. Both players must commit before the phase
+        /// auto-advances to `InReveal`.
+        fn commit(
+            &mut self,
+            match_id: u64,
+            commitment: [u8; 32],
+        ) -> sails_rs::client::PendingCall<io::Commit, Self::Env>;
         /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
         ///
         /// Refund correctness (sails-rs 0.10.x):
@@ -58,6 +68,26 @@ pub mod aan_tv {
         /// outbound sends are NOT executed. `CommandReply::with_value` is the
         /// only reliable refund primitive.
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env>;
+        /// Reveal the preimage (`move_value`, `salt`) behind a prior commitment. Free — no msg::value.
+        ///
+        /// The contract verifies `SHA-256(move_value || salt) == stored_commitment`.
+        /// On mismatch the caller receives `Err(RevealMismatch)` and may retry before
+        /// the `reveal_deadline_block`. Resolve is handled separately (Task 11).
+        fn reveal(
+            &mut self,
+            match_id: u64,
+            move_value: u8,
+            salt: [u8; 32],
+        ) -> sails_rs::client::PendingCall<io::Reveal, Self::Env>;
+        /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
+        ///
+        /// Used by off-chain clients and gtests to inspect match state without
+        /// exposing the full program state. This is a partial Task 14 grab — it is
+        /// load-bearing for Tasks 10 and 11 tests.
+        fn get_match(
+            &self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::GetMatch, Self::Env>;
     }
     pub struct AanTvImpl;
     impl<E: sails_rs::client::GearEnv> AanTv for sails_rs::client::Service<AanTvImpl, E> {
@@ -68,15 +98,39 @@ pub mod aan_tv {
         ) -> sails_rs::client::PendingCall<io::AcceptMatch, Self::Env> {
             self.pending_call((match_id,))
         }
+        fn commit(
+            &mut self,
+            match_id: u64,
+            commitment: [u8; 32],
+        ) -> sails_rs::client::PendingCall<io::Commit, Self::Env> {
+            self.pending_call((match_id, commitment))
+        }
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env> {
             self.pending_call(())
+        }
+        fn reveal(
+            &mut self,
+            match_id: u64,
+            move_value: u8,
+            salt: [u8; 32],
+        ) -> sails_rs::client::PendingCall<io::Reveal, Self::Env> {
+            self.pending_call((match_id, move_value, salt))
+        }
+        fn get_match(
+            &self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::GetMatch, Self::Env> {
+            self.pending_call((match_id,))
         }
     }
 
     pub mod io {
         use super::*;
         sails_rs::io_struct_impl!(AcceptMatch (match_id: u64) -> Result<(), super::Error>);
+        sails_rs::io_struct_impl!(Commit (match_id: u64, commitment: [u8; 32]) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
+        sails_rs::io_struct_impl!(Reveal (match_id: u64, move_value: u8, salt: [u8; 32]) -> Result<(), super::Error>);
+        sails_rs::io_struct_impl!(GetMatch (match_id: u64) -> Option<super::Match>);
     }
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
@@ -97,4 +151,30 @@ pub enum Error {
     InvalidArg,
     ArithmeticOverflow,
     RefundFailed,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct Match {
+    pub id: u64,
+    pub player_a: ActorId,
+    pub player_b: Option<ActorId>,
+    pub commit_a: Option<[u8; 32]>,
+    pub commit_b: Option<[u8; 32]>,
+    pub reveal_a: Option<u8>,
+    pub reveal_b: Option<u8>,
+    pub winner: Option<ActorId>,
+    pub pot: u128,
+    pub commit_deadline_block: u32,
+    pub reveal_deadline_block: u32,
+    pub state: MatchState,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum MatchState {
+    Open,
+    InCommit,
+    InReveal,
+    Resolved,
 }

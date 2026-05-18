@@ -19,6 +19,7 @@ dependencies = [
  "aan-tv-app",
  "aan-tv-client",
  "sails-rs",
+ "sha2 0.10.9",
  "tokio",
 ]
 
@@ -29,6 +30,7 @@ dependencies = [
  "parity-scale-codec",
  "sails-rs",
  "scale-info",
+ "sha2 0.10.9",
 ]
 
 [[package]]

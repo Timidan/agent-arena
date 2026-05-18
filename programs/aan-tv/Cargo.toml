@@ -19,6 +19,7 @@ aan-tv-app.workspace = true
 aan-tv-client.workspace = true
 sails-rs = { workspace = true, features = ["gtest", "gclient"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
+sha2 = "0.10"
 
 [build-dependencies]
 aan-tv-app.workspace = true

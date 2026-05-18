@@ -8,6 +8,7 @@ use sails_rs::{
     gstd::{exec, msg, CommandReply},
     prelude::*,
 };
+use sha2::{Digest, Sha256};
 
 // ── Type aliases ────────────────────────────────────────────────────────────
 pub type MatchId = u64;
@@ -256,6 +257,120 @@ impl AanTv {
 
         // Refund excess (with_value(0) is a no-op for exact payment).
         CommandReply::new(Ok(())).with_value(excess)
+    }
+
+    /// Commit a SHA-256 commitment for the caller's move. Free — no msg::value required.
+    ///
+    /// Can only be called while the match is in `InCommit` state and before
+    /// `commit_deadline_block`. Both players must commit before the phase
+    /// auto-advances to `InReveal`.
+    #[export]
+    pub fn commit(&mut self, match_id: MatchId, commitment: [u8; 32]) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let sender = msg::source();
+
+        let m = match state.matches.get_mut(&match_id) {
+            Some(m) => m,
+            None => return Err(Error::MatchNotFound),
+        };
+
+        if m.state != MatchState::InCommit {
+            return Err(Error::WrongPhase);
+        }
+
+        if exec::block_height() > m.commit_deadline_block {
+            return Err(Error::DeadlinePassed);
+        }
+
+        if sender == m.player_a {
+            if m.commit_a.is_some() {
+                return Err(Error::DuplicateCommit);
+            }
+            m.commit_a = Some(commitment);
+        } else if Some(sender) == m.player_b {
+            if m.commit_b.is_some() {
+                return Err(Error::DuplicateCommit);
+            }
+            m.commit_b = Some(commitment);
+        } else {
+            return Err(Error::Unauthorized);
+        }
+
+        // Auto-advance to InReveal once both players have committed.
+        if m.commit_a.is_some() && m.commit_b.is_some() {
+            m.state = MatchState::InReveal;
+        }
+
+        Ok(())
+    }
+
+    /// Reveal the preimage (`move_value`, `salt`) behind a prior commitment. Free — no msg::value.
+    ///
+    /// The contract verifies `SHA-256(move_value || salt) == stored_commitment`.
+    /// On mismatch the caller receives `Err(RevealMismatch)` and may retry before
+    /// the `reveal_deadline_block`. Resolve is handled separately (Task 11).
+    #[export]
+    pub fn reveal(&mut self, match_id: MatchId, move_value: u8, salt: [u8; 32]) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let sender = msg::source();
+
+        let m = match state.matches.get_mut(&match_id) {
+            Some(m) => m,
+            None => return Err(Error::MatchNotFound),
+        };
+
+        if m.state != MatchState::InReveal {
+            return Err(Error::WrongPhase);
+        }
+
+        if exec::block_height() > m.reveal_deadline_block {
+            return Err(Error::DeadlinePassed);
+        }
+
+        let expected_hash = Self::compute_commitment(move_value, &salt);
+
+        if sender == m.player_a {
+            if m.commit_a.is_none() {
+                return Err(Error::WrongPhase);
+            }
+            if m.commit_a != Some(expected_hash) {
+                return Err(Error::RevealMismatch);
+            }
+            m.reveal_a = Some(move_value);
+        } else if Some(sender) == m.player_b {
+            if m.commit_b.is_none() {
+                return Err(Error::WrongPhase);
+            }
+            if m.commit_b != Some(expected_hash) {
+                return Err(Error::RevealMismatch);
+            }
+            m.reveal_b = Some(move_value);
+        } else {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(())
+    }
+
+    /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
+    ///
+    /// Used by off-chain clients and gtests to inspect match state without
+    /// exposing the full program state. This is a partial Task 14 grab — it is
+    /// load-bearing for Tasks 10 and 11 tests.
+    #[export]
+    pub fn get_match(&self, match_id: MatchId) -> Option<Match> {
+        self.state.borrow().matches.get(&match_id).cloned()
+    }
+
+    /// Private helper: compute SHA-256(move_value || salt).
+    fn compute_commitment(move_value: u8, salt: &[u8; 32]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update([move_value]);
+        hasher.update(salt);
+        let out = hasher.finalize();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&out);
+        arr
     }
 }
 
