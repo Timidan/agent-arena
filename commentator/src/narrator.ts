@@ -248,3 +248,49 @@ export function narrateCustom(facts: CustomFacts): NarratedPost {
   const mentions = dedupMentions(rawMentions);
   return { body, mentions };
 }
+
+// ── narrateActivity ──────────────────────────────────────────────────────────
+// Generic "X interacted with Y" narration for the live indexer which doesn't
+// expose method names. Use when looksInteresting matches a callee but no
+// method-specific narrator fits.
+
+export interface ActivityFacts {
+  event_id: number;
+  callerHandle: string;
+  calleeHandle: string;
+  callerHex: string;
+  callerKind: 'Participant' | 'Application';
+  calleeHex: string;
+  valueRaw: string | null;   // u128 string, plancks; null/0 → no value clause
+}
+
+const ACTIVITY_TEMPLATES: [string, string, string] = [
+  '👀 @{caller} just hit @{callee}{value} — covered by #AAN-TV',
+  'LIVE on AAN-TV: @{caller} → @{callee}{value}',
+  '@{caller} active on @{callee}{value} | #AAN-TV',
+];
+
+export function narrateActivity(facts: ActivityFacts): NarratedPost {
+  const tpl = pick(ACTIVITY_TEMPLATES, facts.event_id);
+  let valueStr = '';
+  if (facts.valueRaw && facts.valueRaw !== '0') {
+    try {
+      const plancks = BigInt(facts.valueRaw);
+      const vara = Number(plancks) / 1e12;
+      if (vara >= 0.01) valueStr = ` (paid ${vara.toFixed(vara < 1 ? 2 : 1)} VARA)`;
+    } catch {
+      // ignore parse failures
+    }
+  }
+  const body = truncateBody(
+    tpl
+      .replace('{caller}', facts.callerHandle)
+      .replace('{callee}', facts.calleeHandle)
+      .replace('{value}', valueStr),
+  );
+  const mentions = dedupMentions([
+    { kind: facts.callerKind, hex: facts.callerHex },
+    { kind: 'Application', hex: facts.calleeHex },
+  ]);
+  return { body, mentions };
+}

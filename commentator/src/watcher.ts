@@ -3,11 +3,8 @@
  *
  * Every POLL_INTERVAL_MS:
  *   1. Refresh voucher if stale
- *   2. Fetch interactions since last seen block
- *   3. For each interaction:
- *      a. Skip self-loops (source or target == OPERATOR_HEX)
- *      b. If RequestCoverage on our APP_HEX → narrate + markCovered
- *      c. If looks-interesting → route to appropriate narrator + post
+ *   2. (Path B) Tick the paid coverage queue — process uncovered items first
+ *   3. (Path A) Fetch interactions since last seen block and narrate organically
  *   4. Advance lastSeenBlock checkpoint
  *   5. Sleep POLL_INTERVAL_MS
  *
@@ -19,13 +16,15 @@ import { isSelfLoop } from './self-loop-guard.js';
 import {
   fetchInteractionsSinceBlock,
   fetchChainTipBlock,
+  fetchCoverageQueue,
   resolveHandle,
-  decodeRequestCoverageArgs,
   type Interaction,
 } from './indexer.js';
 import {
   getLastSeenBlock,
   setLastSeenBlock,
+  getLastSeenCoverageId,
+  setLastSeenCoverageId,
   alreadyProcessed,
   recordProcessed,
   recordFailed,
@@ -38,12 +37,13 @@ import {
   narrateLaunchedApp,
   narrateMatchSettled,
   narrateCustom,
+  narrateActivity,
   type NarratedPost,
 } from './narrator.js';
 
 // ── interesting-event allowlist ─────────────────────────────────────────────
 //
-// Format: { toApplicationId: string | '__OWN__', methodName: string | string[], kind: NarrationKind }
+// Format: { callee: string | '__OWN__' | '__PID__', methodNames: string[], kind: NarrationKind }
 // __OWN__ is resolved at runtime to APP_HEX.
 // __PID__ is resolved at runtime to PID (Vara A2A network program).
 
@@ -51,57 +51,58 @@ type NarrationKind =
   | 'MatchSettled'
   | 'MarketResolved'
   | 'BountyCompleted'
-  | 'LaunchedApp';
+  | 'LaunchedApp'
+  | 'Activity';   // generic "X interacted with Y" — used when no method-specific narrator fits
 
 interface InterestingFilter {
-  toApplicationId: string;
-  methodNames: string[];
+  /** Match by callee hex OR sentinels `__OWN__` / `__PID__` */
+  hex?: string;
+  /** Match by pre-resolved calleeHandle (preferred when callee is a registered app) */
+  handle?: string;
   kind: NarrationKind;
 }
 
+// NOTE: the live indexer schema does NOT expose `method` on Interaction (always null).
+// We can only filter by callee, not by method. Anything matching here is narrated as
+// the kind below; for the generic `Activity` kind we just say "X interacted with Y".
 const INTERESTING_FILTERS: InterestingFilter[] = [
-  // Our own AAN-TV dice match resolutions
-  {
-    toApplicationId: '__OWN__',
-    methodNames: ['Resolve'],
-    kind: 'MatchSettled',
-  },
-  // Infinite Bounty v3 approvals / work submissions
-  {
-    toApplicationId: '0x747d09594538498f2c64ae91f93131a47b0ce8abaa80a54e37d7a6badadc15e8',
-    methodNames: ['Approve', 'SubmitWork'],
-    kind: 'BountyCompleted',
-  },
-  // Zeeast casino notable methods
-  {
-    toApplicationId: '0xb0b4312511d336db3c625a172b5c7da883d289efdf68648a79869f7b80da7a53',
-    methodNames: ['Play', 'Spin'],
-    kind: 'MatchSettled', // casino matches treated as 1v1 for template purposes
-  },
-  // Vara A2A network — new app launches via RegisterApplication
-  {
-    toApplicationId: '__PID__',
-    methodNames: ['RegisterApplication'],
-    kind: 'LaunchedApp',
-  },
+  // Our own AAN-TV program — any call to us is worth narrating
+  { hex: '__OWN__',  kind: 'Activity' },
+  // Main Vara A2A network program — RegisterApplication / Chat / Board calls land here
+  { hex: '__PID__',  kind: 'Activity' },
+  // High-activity Season-1 apps
+  { handle: 'vara-agents',      kind: 'Activity' },
+  { handle: 'varapulse',        kind: 'Activity' },
+  { handle: 'varabridge',       kind: 'Activity' },
+  { handle: 'varaflow-org',     kind: 'Activity' },
+  { handle: 'infinite-bounty-v3', kind: 'BountyCompleted' },
+  { handle: 'zeeast-casino',    kind: 'MatchSettled' },
+  // Other apps from the day-0 scan that are likely to be active
+  { handle: 'skopos-bridge',    kind: 'Activity' },
+  { handle: 'hy4-predict-app',  kind: 'MarketResolved' },
+  { handle: 'hy4-game-app',     kind: 'Activity' },
+  { handle: 'thebookdex',       kind: 'Activity' },
+  { handle: 'agent-tic-tac-toe', kind: 'Activity' },
 ];
 
-function resolveFilterId(raw: string): string {
+function resolveHexSentinel(raw: string): string {
   if (raw === '__OWN__') return process.env.APP_HEX ?? '';
   if (raw === '__PID__') return process.env.PID ?? '';
   return raw;
 }
 
+/** Returns a display handle: pre-resolved handle or truncated hex fallback */
+function displayHandle(handle: string | null, hex: string): string {
+  return handle ?? hex.slice(0, 8) + '…';
+}
+
 function looksInteresting(i: Interaction): NarrationKind | null {
   for (const f of INTERESTING_FILTERS) {
-    const resolvedId = resolveFilterId(f.toApplicationId);
-    if (!resolvedId) continue;
-    if (
-      i.toApplicationId.toLowerCase() === resolvedId.toLowerCase() &&
-      f.methodNames.includes(i.methodName)
-    ) {
-      return f.kind;
+    if (f.hex) {
+      const resolvedHex = resolveHexSentinel(f.hex);
+      if (resolvedHex && i.callee.toLowerCase() === resolvedHex.toLowerCase()) return f.kind;
     }
+    if (f.handle && i.calleeHandle === f.handle) return f.kind;
   }
   return null;
 }
@@ -116,20 +117,24 @@ async function narrateInteraction(
 ): Promise<NarratedPost | null> {
   const eventId = eventIdCounter++;
 
-  const fromHandle = await resolveHandle(interaction.fromActor);
-  const toHandle = await resolveHandle(interaction.toApplicationId);
+  // Use pre-resolved handles from indexer; fall back to resolveHandle for
+  // unregistered wallets where callerHandle/calleeHandle are null.
+  const callerHandle =
+    interaction.callerHandle ?? (await resolveHandle(interaction.caller));
+  const calleeHandle =
+    interaction.calleeHandle ?? (await resolveHandle(interaction.callee));
+
+  const callerDisplay = displayHandle(callerHandle, interaction.caller);
+  const calleeDisplay = displayHandle(calleeHandle, interaction.callee);
 
   switch (kind) {
     case 'MatchSettled': {
-      // We don't have rich outcome data from the indexer interaction — use
-      // fromActor as player and toApplicationId as app; treat as Winner outcome
-      // with generic names when we can't resolve both players.
       return narrateMatchSettled({
         event_id: eventId,
-        winnerHandle: fromHandle ?? interaction.fromActor.slice(0, 12) + '…',
-        loserHandle: toHandle ?? interaction.toApplicationId.slice(0, 12) + '…',
-        winnerHex: interaction.fromActor,
-        loserHex: interaction.toApplicationId,
+        winnerHandle: callerDisplay,
+        loserHandle: calleeDisplay,
+        winnerHex: interaction.caller,
+        loserHex: interaction.callee,
         potVara: '?',
         outcomeKind: 'Winner',
       });
@@ -138,8 +143,8 @@ async function narrateInteraction(
     case 'MarketResolved': {
       return narrateMarketResolved({
         event_id: eventId,
-        marketHandle: toHandle ?? interaction.toApplicationId.slice(0, 12) + '…',
-        marketHex: interaction.toApplicationId,
+        marketHandle: calleeDisplay,
+        marketHex: interaction.callee,
         resolvedTo: '?',
         potVara: '?',
       });
@@ -148,43 +153,109 @@ async function narrateInteraction(
     case 'BountyCompleted': {
       return narrateBountyCompleted({
         event_id: eventId,
-        bountyHandle: toHandle ?? interaction.toApplicationId.slice(0, 12) + '…',
-        bountyHex: interaction.toApplicationId,
-        claimerHandle: fromHandle ?? interaction.fromActor.slice(0, 12) + '…',
-        claimerHex: interaction.fromActor,
+        bountyHandle: calleeDisplay,
+        bountyHex: interaction.callee,
+        claimerHandle: callerDisplay,
+        claimerHex: interaction.caller,
         rewardVara: '?',
       });
     }
 
     case 'LaunchedApp': {
-      // For RegisterApplication, fromActor is the registering operator, not the app hex.
-      // argsJson may contain the program_id. Attempt to decode it defensively.
-      let appHex = interaction.fromActor;
-      let appHandle = fromHandle;
-
-      if (interaction.argsJson) {
-        try {
-          const parsed = JSON.parse(interaction.argsJson) as unknown;
-          if (Array.isArray(parsed) && typeof parsed[0] === 'string') {
-            // First arg is typically program_id for RegisterApplication
-            appHex = parsed[0] as string;
-            appHandle = await resolveHandle(appHex);
-          }
-        } catch {
-          // defensive fallback — use fromActor
-        }
-      }
-
+      // For RegisterApplication, caller is the registering operator.
+      // calleeHandle is the registered program's handle if it was already
+      // registered — otherwise fall back to caller data.
       return narrateLaunchedApp({
         event_id: eventId,
-        appHandle: appHandle ?? appHex.slice(0, 12) + '…',
-        appHex,
+        appHandle: calleeHandle ? calleeDisplay : callerDisplay,
+        appHex: calleeHandle ? interaction.callee : interaction.caller,
         track: 'Unknown',
+      });
+    }
+
+    case 'Activity': {
+      const callerKind = interaction.callerKind === 'Participant' ? 'Participant' : 'Application';
+      return narrateActivity({
+        event_id: eventId,
+        callerHandle: callerDisplay,
+        calleeHandle: calleeDisplay,
+        callerHex: interaction.caller,
+        callerKind,
+        calleeHex: interaction.callee,
+        valueRaw: interaction.valuePaidRaw,
       });
     }
 
     default:
       return null;
+  }
+}
+
+// ── Path B: tick coverage queue ─────────────────────────────────────────────
+
+async function tickCoverageQueue(): Promise<void> {
+  const cursor = getLastSeenCoverageId();
+  let result: { items: Awaited<ReturnType<typeof fetchCoverageQueue>>['items']; nextCursor: bigint | null };
+  try {
+    result = await fetchCoverageQueue(cursor, 50);
+  } catch (err) {
+    console.error('[aan-tv] fetchCoverageQueue failed:', err);
+    return;
+  }
+
+  for (const item of result.items) {
+    // Already covered — skip silently
+    if (item.chatMsgId != null) {
+      // Advance cursor past this item so we don't re-check it every tick
+      const itemId = BigInt(item.id);
+      if (itemId > getLastSeenCoverageId()) {
+        setLastSeenCoverageId(itemId);
+      }
+      continue;
+    }
+
+    console.log(
+      `[aan-tv] Coverage request id=${item.id} requester=${item.requester} hint="${item.hint.slice(0, 40)}"`,
+    );
+
+    // Resolve handles for requester and target
+    const requesterHandle = await resolveHandle(item.requester);
+    const targetHandle = item.targetProgram ? await resolveHandle(item.targetProgram) : undefined;
+
+    const post = narrateCustom({
+      requesterHandle: displayHandle(requesterHandle, item.requester),
+      hint: item.hint,
+      targetHandle: targetHandle ?? undefined,
+      requesterHex: item.requester,
+      targetHex: item.targetProgram ?? undefined,
+    });
+
+    console.log(`[aan-tv] Posting coverage narration: ${post.body.slice(0, 60)}…`);
+
+    try {
+      const postResult = await postChatAsApplication(post);
+      console.log(
+        `[aan-tv] Coverage narration posted: msgId=${postResult.msgId} txHash=${postResult.txHash}`,
+      );
+
+      // Mark covered on-chain
+      try {
+        await markCovered(BigInt(item.id), BigInt(postResult.msgId));
+        console.log(`[aan-tv] MarkCovered OK: coverageId=${item.id}`);
+      } catch (markErr) {
+        // Non-fatal — the post already landed; log but keep going
+        console.error(`[aan-tv] MarkCovered failed (post already made): ${markErr}`);
+      }
+
+      // Advance coverage cursor past this item
+      const itemId = BigInt(item.id);
+      if (itemId > getLastSeenCoverageId()) {
+        setLastSeenCoverageId(itemId);
+      }
+    } catch (err) {
+      console.error('[aan-tv] Failed to post coverage narration:', err);
+      // Don't advance cursor — retry next tick
+    }
   }
 }
 
@@ -199,7 +270,7 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
   console.log(`[aan-tv] OPERATOR_HEX: ${operatorHex}`);
   console.log(`[aan-tv] Poll interval: ${opts.intervalMs}ms`);
 
-  // Fix 3: Cold-start backfill — if checkpoint is 0 (fresh DB), seed to
+  // Cold-start backfill — if checkpoint is 0 (fresh DB), seed to
   // chain tip - 100 so first tick processes recent history instead of all
   // network history from genesis.
   {
@@ -223,7 +294,7 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
     const loopStart = Date.now();
 
     try {
-      // 1. Fix 4: ensureFresh() before EVERY tick — always GETs voucher state
+      // 1. ensureFresh() before EVERY tick — always GETs voucher state
       // (free/read-only), POSTs top-up only if balance is low or voucher
       // missing. If this throws (network error, no voucher), skip the tick
       // entirely — do NOT advance checkpoint.
@@ -238,14 +309,10 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
         continue;
       }
 
-      // 2. Fetch interactions since last seen block.
-      //
-      // Fix 5 (partial): limit=50. If 50+ interactions land in a single block,
-      // we miss the tail beyond position 50 in that block. Formal cursor-based
-      // pagination (tracking lastSeenBlock + lastSeenInteractionId together) is
-      // the full fix but requires indexer support for compound ordering filters.
-      // TODO: implement cursor pagination when indexer exposes a stable cursor.
-      // For now, bumping the limit reduces but does not eliminate the risk.
+      // 2. Path B (priority): tick the paid coverage queue
+      await tickCoverageQueue();
+
+      // 3. Path A: organic narration from interactions
       const sinceBlock = getLastSeenBlock();
       const interactions = await fetchInteractionsSinceBlock(sinceBlock, 50);
       console.log(`[aan-tv] Fetched ${interactions.length} interactions since block ${sinceBlock}`);
@@ -257,79 +324,26 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
           maxBlock = interaction.blockNumber;
         }
 
-        // Fix 2: Per-interaction dedup — skip if already narrated.
-        // alreadyProcessed() checks the processed_interactions SQLite table,
-        // written BEFORE checkpoint advance, so restarts after a crash are safe.
+        // Per-interaction dedup — skip if already narrated.
         if (alreadyProcessed(interaction.id)) {
           console.log(`[aan-tv] Skipping already-processed interaction ${interaction.id}`);
           continue;
         }
 
-        // 3a. Self-loop guard — never narrate events touching operator wallet
-        if (
-          isSelfLoop(
-            { source: interaction.fromActor, target: interaction.toApplicationId },
-            operatorHex,
-          )
-        ) {
+        // Self-loop guard — never narrate events where the caller is the
+        // operator wallet (anti-cheat). Note: our APP_HEX being the callee IS
+        // interesting (those are our own program's matches resolving).
+        if (isSelfLoop({ source: interaction.caller, target: operatorHex }, operatorHex)) {
           console.log(`[aan-tv] Skipping self-loop interaction ${interaction.id}`);
-          // Record as "processed" so self-loops aren't reconsidered on restart
           recordFailed(interaction.id, 'self-loop: skipped');
           continue;
         }
 
-        // 3b. Paid coverage requests on our program
-        if (
-          interaction.methodName === 'RequestCoverage' &&
-          interaction.toApplicationId.toLowerCase() === appHex.toLowerCase()
-        ) {
-          console.log(`[aan-tv] Coverage request from ${interaction.fromActor}`);
-
-          const { eventKind, targetProgram, hint } = decodeRequestCoverageArgs(
-            interaction.argsJson,
-          );
-
-          const requesterHandle = await resolveHandle(interaction.fromActor);
-          const targetHandle = targetProgram ? await resolveHandle(targetProgram) : undefined;
-
-          const post = narrateCustom({
-            requesterHandle: requesterHandle ?? interaction.fromActor.slice(0, 12) + '…',
-            hint,
-            targetHandle: targetHandle ?? undefined,
-            requesterHex: interaction.fromActor,
-            targetHex: targetProgram ?? undefined,
-          });
-
-          console.log(`[aan-tv] Posting coverage narration: ${post.body.slice(0, 60)}…`);
-
-          try {
-            const result = await postChatAsApplication(post);
-            console.log(`[aan-tv] Chat posted: msgId=${result.msgId} txHash=${result.txHash}`);
-
-            // Fix 2: Record before advancing checkpoint
-            recordProcessed(interaction.id, result.msgId, result.txHash);
-
-            // coverage_id is not available from argsJson alone — it's the
-            // return value of RequestCoverage. MarkCovered skipped until a
-            // Sails typed read (GetCoverageQueue) is integrated post-MVP.
-            console.log(
-              '[aan-tv] NOTE: coverage_id not available from interaction argsJson alone.' +
-                ' MarkCovered skipped — see indexer.ts comment.' +
-                ` eventKind=${eventKind} hint="${hint}"`,
-            );
-          } catch (err) {
-            console.error('[aan-tv] Failed to post coverage narration:', err);
-            recordFailed(interaction.id, String(err));
-          }
-
-          continue;
-        }
-
-        // 3c. Organic narration of interesting activity on other apps
+        // Organic narration of interesting activity on known apps
         const kind = looksInteresting(interaction);
         if (kind) {
           console.log(
-            `[aan-tv] Interesting interaction: ${interaction.methodName} on ${interaction.toApplicationId.slice(0, 16)}… kind=${kind}`,
+            `[aan-tv] Interesting interaction: ${interaction.method ?? '?'} on ${interaction.callee.slice(0, 16)}… kind=${kind}`,
           );
 
           try {
@@ -339,10 +353,8 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
               console.log(
                 `[aan-tv] Organic narration posted: msgId=${result.msgId} kind=${kind}`,
               );
-              // Fix 2: Record before advancing checkpoint
               recordProcessed(interaction.id, result.msgId, result.txHash);
             } else {
-              // narrateInteraction returned null (no template matched) — skip silently
               recordFailed(interaction.id, 'no narration template matched');
             }
           } catch (err) {
@@ -350,16 +362,11 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
             recordFailed(interaction.id, String(err));
           }
         } else {
-          // Interaction is not interesting — record as skipped so it's never
-          // reconsidered on restart (saves redundant DB lookups for boring events).
           recordFailed(interaction.id, 'not-interesting: skipped');
         }
       }
 
       // 4. Advance checkpoint AFTER all per-item inserts to processed_interactions.
-      // Per Fix 2: even if the process crashes between the last recordProcessed()
-      // and this setLastSeenBlock(), the next restart re-fetches the batch but
-      // alreadyProcessed() gates each item, so no duplicate narration occurs.
       if (maxBlock > sinceBlock) {
         setLastSeenBlock(maxBlock);
         console.log(`[aan-tv] Checkpoint advanced to block ${maxBlock}`);
