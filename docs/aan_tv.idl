@@ -1,0 +1,164 @@
+type Error = enum {
+  Unauthorized,
+  InsufficientPayment,
+  InsufficientFunds,
+  MatchNotFound,
+  WrongPhase,
+  DuplicateCommit,
+  RevealMismatch,
+  DeadlinePassed,
+  DeadlineNotReached,
+  CoverageNotFound,
+  AlreadyCovered,
+  SelfCover,
+  InvalidArg,
+  ArithmeticOverflow,
+  RefundFailed,
+};
+
+type CoverageKind = enum {
+  MarketResolved,
+  BountyCompleted,
+  LaunchedApp,
+  MatchSettled,
+  Custom,
+};
+
+type MatchOutcome = enum {
+  /// A player won; winner_cut was paid to them.
+  Winner: actor_id,
+  /// No winner; both players were refunded their buy-in.
+  Abandoned,
+};
+
+type CoverageQueuePage = struct {
+  items: vec CoverageRequest,
+  next_cursor: opt u64,
+};
+
+type CoverageRequest = struct {
+  id: u64,
+  requester: actor_id,
+  event_kind: CoverageKind,
+  target_program: opt actor_id,
+  hint: str,
+  paid: u128,
+  posted_at_block: u32,
+  chat_msg_id: opt u64,
+};
+
+type Match = struct {
+  id: u64,
+  player_a: actor_id,
+  player_b: opt actor_id,
+  commit_a: opt [u8, 32],
+  commit_b: opt [u8, 32],
+  reveal_a: opt u8,
+  reveal_b: opt u8,
+  winner: opt actor_id,
+  pot: u128,
+  commit_deadline_block: u32,
+  reveal_deadline_block: u32,
+  state: MatchState,
+};
+
+type MatchState = enum {
+  Open,
+  InCommit,
+  InReveal,
+  Resolved,
+};
+
+constructor {
+  /// Initialise the program. `msg::source()` becomes admin.
+  Create : ();
+};
+
+service AanTv {
+  /// Accept an open 1v1 dice match as player_b. Caller must attach at least `buy_in` VARA.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+  ///   - Underpayment / any Err: full `value` returned via
+  ///     `CommandReply::with_value(value)`.
+  ///   DO NOT use `msg::send` for refunds — on Err paths, outbound sends do
+  ///   NOT fire. `CommandReply::with_value` is the only reliable refund primitive.
+  AcceptMatch : (match_id: u64) -> result (null, Error);
+  /// Commit a SHA-256 commitment for the caller's move. Free — no msg::value required.
+  /// 
+  /// Can only be called while the match is in `InCommit` state and before
+  /// `commit_deadline_block`. Both players must commit before the phase
+  /// auto-advances to `InReveal`.
+  Commit : (match_id: u64, commitment: [u8, 32]) -> result (null, Error);
+  /// Mark a coverage entry as covered by recording the bot's chat message ID.
+  /// 
+  /// Admin only. Append-only: never removes entries (invariant #7).
+  MarkCovered : (coverage_id: u64, chat_msg_id: u64) -> result (null, Error);
+  /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+  ///   - Underpayment / any Err: full `value` returned via
+  ///     `CommandReply::with_value(value)`.
+  ///   DO NOT use `msg::send` for refunds — on Err paths in sails-rs 0.10,
+  ///   outbound sends are NOT executed. `CommandReply::with_value` is the
+  ///   only reliable refund primitive.
+  OpenMatch : () -> result (u64, Error);
+  /// Request coverage for an on-chain event. Caller must attach at least `coverage_fee` VARA.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+  ///   - Any Err: full `value` returned via `CommandReply::with_value(value)`.
+  ///   DO NOT use `msg::send` for refunds.
+  RequestCoverage : (event_kind: CoverageKind, target_program: opt actor_id, hint: str) -> result (u64, Error);
+  /// Resolve a match. Pays the winner 90% of the pot; the remaining 10% goes to
+  /// `protocol_balance` (retrievable by admin via `sweep`).
+  /// 
+  /// Anyone may call Resolve — the caller pays only gas and receives nothing.
+  /// 
+  /// Decision matrix:
+  /// 
+  ///  state == Open / Resolved → Err(WrongPhase)
+  /// 
+  ///  state == InCommit:
+  ///    block <= commit_deadline → Err(DeadlineNotReached)
+  ///    block >  commit_deadline, one committed → committer wins, Ok(MatchOutcome::Winner)
+  ///    block >  commit_deadline, neither committed → refund both, Ok(MatchOutcome::Abandoned)
+  /// 
+  ///  state == InReveal:
+  ///    Both revealed → winner = higher mod-100 (ties go to player_a), Ok(MatchOutcome::Winner)
+  ///    One revealed, deadline not passed → Err(DeadlineNotReached)
+  ///    One revealed, deadline passed → revealer wins, Ok(MatchOutcome::Winner)
+  ///    Neither revealed, deadline not passed → Err(DeadlineNotReached)
+  ///    Neither revealed, deadline passed → refund both, Ok(MatchOutcome::Abandoned)
+  /// 
+  /// IMPORTANT: abandonment paths return Ok(MatchOutcome::Abandoned) — NOT Err — so that
+  /// queued msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails semantics,
+  /// outbound sends only execute when the service method returns Ok.
+  Resolve : (match_id: u64) -> result (MatchOutcome, Error);
+  /// Reveal the preimage (`move_value`, `salt`) behind a prior commitment. Free — no msg::value.
+  /// 
+  /// The contract verifies `SHA-256(move_value || salt) == stored_commitment`.
+  /// On mismatch the caller receives `Err(RevealMismatch)` and may retry before
+  /// the `reveal_deadline_block`. Resolve is handled separately (Task 11).
+  Reveal : (match_id: u64, move_value: u8, salt: [u8, 32]) -> result (null, Error);
+  /// Pull accumulated protocol fees to admin wallet.
+  /// 
+  /// Only admin may call this. `amount` must not exceed `protocol_balance`
+  /// (the accumulated protocol cut from resolved matches). Attempting to sweep
+  /// more than `protocol_balance` returns `Err(InsufficientFunds)` to prevent
+  /// the admin from draining funds that belong to active match pots.
+  Sweep : (amount: u128) -> result (null, Error);
+  /// Read paginated coverage queue. Returns up to `limit` entries starting from `cursor`.
+  /// 
+  /// Cursor semantics: `None` starts from ID 1; `Some(n)` starts from ID n.
+  /// Bot uses `next_cursor` as the cursor for the next poll (incremental fetch).
+  query GetCoverageQueue : (cursor: opt u64, limit: u32) -> CoverageQueuePage;
+  /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
+  /// 
+  /// Used by off-chain clients and gtests to inspect match state without
+  /// exposing the full program state. This is a partial Task 14 grab — it is
+  /// load-bearing for Tasks 10 and 11 tests.
+  query GetMatch : (match_id: u64) -> opt Match;
+};
+
