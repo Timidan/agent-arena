@@ -58,6 +58,14 @@ pub mod aan_tv {
             match_id: u64,
             commitment: [u8; 32],
         ) -> sails_rs::client::PendingCall<io::Commit, Self::Env>;
+        /// Mark a coverage entry as covered by recording the bot's chat message ID.
+        ///
+        /// Admin only. Append-only: never removes entries (invariant #7).
+        fn mark_covered(
+            &mut self,
+            coverage_id: u64,
+            chat_msg_id: u64,
+        ) -> sails_rs::client::PendingCall<io::MarkCovered, Self::Env>;
         /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
         ///
         /// Refund correctness (sails-rs 0.10.x):
@@ -68,6 +76,18 @@ pub mod aan_tv {
         /// outbound sends are NOT executed. `CommandReply::with_value` is the
         /// only reliable refund primitive.
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env>;
+        /// Request coverage for an on-chain event. Caller must attach at least `coverage_fee` VARA.
+        ///
+        /// Refund correctness (sails-rs 0.10.x):
+        /// - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+        /// - Any Err: full `value` returned via `CommandReply::with_value(value)`.
+        /// DO NOT use `msg::send` for refunds.
+        fn request_coverage(
+            &mut self,
+            event_kind: CoverageKind,
+            target_program: Option<ActorId>,
+            hint: String,
+        ) -> sails_rs::client::PendingCall<io::RequestCoverage, Self::Env>;
         /// Resolve a match after both players have revealed (or after the reveal deadline if only
         /// one player revealed). Pays the winner 90% of the pot; the remaining 10% stays in
         /// the program as protocol cut (retrievable by admin via `sweep`).
@@ -103,6 +123,15 @@ pub mod aan_tv {
         /// balance minus the existential deposit or the underlying send will fail
         /// and propagate as `Err(RefundFailed)` — no special guard needed here.
         fn sweep(&mut self, amount: u128) -> sails_rs::client::PendingCall<io::Sweep, Self::Env>;
+        /// Read paginated coverage queue. Returns up to `limit` entries starting from `cursor`.
+        ///
+        /// Cursor semantics: `None` starts from ID 1; `Some(n)` starts from ID n.
+        /// Bot uses `next_cursor` as the cursor for the next poll (incremental fetch).
+        fn get_coverage_queue(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetCoverageQueue, Self::Env>;
         /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
         ///
         /// Used by off-chain clients and gtests to inspect match state without
@@ -129,8 +158,23 @@ pub mod aan_tv {
         ) -> sails_rs::client::PendingCall<io::Commit, Self::Env> {
             self.pending_call((match_id, commitment))
         }
+        fn mark_covered(
+            &mut self,
+            coverage_id: u64,
+            chat_msg_id: u64,
+        ) -> sails_rs::client::PendingCall<io::MarkCovered, Self::Env> {
+            self.pending_call((coverage_id, chat_msg_id))
+        }
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env> {
             self.pending_call(())
+        }
+        fn request_coverage(
+            &mut self,
+            event_kind: CoverageKind,
+            target_program: Option<ActorId>,
+            hint: String,
+        ) -> sails_rs::client::PendingCall<io::RequestCoverage, Self::Env> {
+            self.pending_call((event_kind, target_program, hint))
         }
         fn resolve(
             &mut self,
@@ -149,6 +193,13 @@ pub mod aan_tv {
         fn sweep(&mut self, amount: u128) -> sails_rs::client::PendingCall<io::Sweep, Self::Env> {
             self.pending_call((amount,))
         }
+        fn get_coverage_queue(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetCoverageQueue, Self::Env> {
+            self.pending_call((cursor, limit))
+        }
         fn get_match(
             &self,
             match_id: u64,
@@ -161,10 +212,13 @@ pub mod aan_tv {
         use super::*;
         sails_rs::io_struct_impl!(AcceptMatch (match_id: u64) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(Commit (match_id: u64, commitment: [u8; 32]) -> Result<(), super::Error>);
+        sails_rs::io_struct_impl!(MarkCovered (coverage_id: u64, chat_msg_id: u64) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
+        sails_rs::io_struct_impl!(RequestCoverage (event_kind: super::CoverageKind, target_program: Option<ActorId>, hint: String) -> Result<u64, super::Error>);
         sails_rs::io_struct_impl!(Resolve (match_id: u64) -> Result<ActorId, super::Error>);
         sails_rs::io_struct_impl!(Reveal (match_id: u64, move_value: u8, salt: [u8; 32]) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(Sweep (amount: u128) -> Result<(), super::Error>);
+        sails_rs::io_struct_impl!(GetCoverageQueue (cursor: Option<u64>, limit: u32) -> super::CoverageQueuePage);
         sails_rs::io_struct_impl!(GetMatch (match_id: u64) -> Option<super::Match>);
     }
 }
@@ -186,6 +240,36 @@ pub enum Error {
     InvalidArg,
     ArithmeticOverflow,
     RefundFailed,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum CoverageKind {
+    MarketResolved,
+    BountyCompleted,
+    LaunchedApp,
+    MatchSettled,
+    Custom,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct CoverageQueuePage {
+    pub items: Vec<CoverageRequest>,
+    pub next_cursor: Option<u64>,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct CoverageRequest {
+    pub id: u64,
+    pub requester: ActorId,
+    pub event_kind: CoverageKind,
+    pub target_program: Option<ActorId>,
+    pub hint: String,
+    pub paid: u128,
+    pub posted_at_block: u32,
+    pub chat_msg_id: Option<u64>,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]

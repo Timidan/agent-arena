@@ -1,4 +1,4 @@
-use aan_tv_client::{AanTvClient, AanTvClientCtors, Match, MatchState, aan_tv::*};
+use aan_tv_client::{AanTvClient, AanTvClientCtors, Match, MatchState, CoverageRequest, CoverageKind, aan_tv::*};
 use sails_rs::{client::*, gtest::*, prelude::ActorId};
 use sha2::{Digest, Sha256};
 
@@ -1463,5 +1463,434 @@ async fn test_sweep_more_than_balance_fails_gracefully() {
     assert_eq!(
         prog_balance_before, prog_balance_after,
         "program balance must not change after failed sweep"
+    );
+}
+
+// ── Coverage constants ────────────────────────────────────────────────────────
+
+const COVERAGE_FEE: u128 = 100_000_000_000; // 0.1 VARA
+const HALF_COVERAGE_FEE: u128 = 50_000_000_000; // 0.05 VARA
+const FIVE_COVERAGE_FEE: u128 = 500_000_000_000; // 0.5 VARA
+
+// A separate actor to use as a target_program (different from requester).
+const TARGET_PROGRAM_ID: u64 = 100;
+
+// ── RequestCoverage tests ─────────────────────────────────────────────────────
+
+/// Happy path: exact 0.1 VARA attached. Returns Ok(1), program balance increases by 0.1 VARA.
+#[tokio::test]
+async fn test_request_coverage_collects_fee() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    let result = service_client
+        .request_coverage(
+            CoverageKind::MarketResolved,
+            Some(target),
+            "ETH market #5 resolved YES".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap();
+
+    assert_eq!(result, Ok(1u64), "expected coverage_id == 1");
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_after - prog_balance_before,
+        COVERAGE_FEE,
+        "program balance should increase by exactly 0.1 VARA (coverage fee)"
+    );
+}
+
+/// Overpayment: 0.5 VARA attached. Returns Ok(1), program retains only 0.1 VARA (0.4 refunded).
+#[tokio::test]
+async fn test_request_coverage_overpayment_refunds_excess() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    let result = service_client
+        .request_coverage(
+            CoverageKind::LaunchedApp,
+            Some(target),
+            "new app launched".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(FIVE_COVERAGE_FEE) // 0.5 VARA
+        .await
+        .unwrap();
+
+    assert_eq!(result, Ok(1u64), "expected coverage_id == 1");
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_after - prog_balance_before,
+        COVERAGE_FEE,
+        "program should retain only 0.1 VARA; excess 0.4 VARA refunded via reply"
+    );
+}
+
+/// Underpayment: 0.05 VARA attached. Returns Err(InsufficientPayment), program balance unchanged.
+#[tokio::test]
+async fn test_request_coverage_underpayment_full_refund_and_err() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    let result = service_client
+        .request_coverage(
+            CoverageKind::Custom,
+            Some(target),
+            "custom event".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(HALF_COVERAGE_FEE) // 0.05 VARA — underpayment
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result,
+        Err(aan_tv_client::Error::InsufficientPayment),
+        "expected InsufficientPayment on underpayment"
+    );
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must be unchanged after underpayment (full refund via CommandReply)"
+    );
+}
+
+/// Self-cover guard: requester sets target_program = themselves. Err(SelfCover), full refund.
+#[tokio::test]
+async fn test_request_coverage_self_target_rejected_with_full_refund() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    // PLAYER_A sets target_program = PLAYER_A (self-promotion)
+    let player_a_actor: ActorId = ActorId::from(PLAYER_A_ID);
+    let result = service_client
+        .request_coverage(
+            CoverageKind::MarketResolved,
+            Some(player_a_actor),
+            "my own app did something cool".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result,
+        Err(aan_tv_client::Error::SelfCover),
+        "expected SelfCover when requester == target_program"
+    );
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must be unchanged after SelfCover rejection (full refund)"
+    );
+}
+
+/// Long hint rejected: 241-char hint → Err(InvalidArg), full refund.
+#[tokio::test]
+async fn test_request_coverage_long_hint_rejected_with_full_refund() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    // Build a 241-char (241-byte for ASCII) hint — one over the limit.
+    let long_hint: String = "x".repeat(241);
+    assert_eq!(long_hint.len(), 241, "hint must be 241 chars for this test");
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    let result = service_client
+        .request_coverage(
+            CoverageKind::BountyCompleted,
+            Some(target),
+            long_hint,
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result,
+        Err(aan_tv_client::Error::InvalidArg),
+        "expected InvalidArg when hint exceeds 240 bytes"
+    );
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must be unchanged after InvalidArg rejection (full refund)"
+    );
+}
+
+// ── GetCoverageQueue tests ────────────────────────────────────────────────────
+
+/// Fresh deploy: GetCoverageQueue returns empty items and no next_cursor.
+#[tokio::test]
+async fn test_coverage_queue_empty() {
+    let (env, program) = deploy().await;
+    let service_client = program.aan_tv();
+
+    let page = service_client
+        .get_coverage_queue(None, 10)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+
+    assert!(page.items.is_empty(), "queue should be empty after fresh deploy");
+    assert_eq!(page.next_cursor, None, "next_cursor should be None for empty queue");
+}
+
+/// Pagination: 5 requests posted, paginate 2 then 3.
+#[tokio::test]
+async fn test_coverage_queue_paginates() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+
+    // Post 5 coverage requests from multiple players.
+    for i in 0..2u64 {
+        let caller = if i % 2 == 0 { PLAYER_A_ID } else { PLAYER_B_ID };
+        service_client
+            .request_coverage(
+                CoverageKind::MarketResolved,
+                Some(target),
+                format!("event {}", i),
+            )
+            .with_actor_id(caller.into())
+            .with_value(COVERAGE_FEE)
+            .await
+            .unwrap()
+            .expect("request_coverage should succeed");
+    }
+    // PLAYER_C for variety.
+    service_client
+        .request_coverage(
+            CoverageKind::MatchSettled,
+            Some(target),
+            "event 2".into(),
+        )
+        .with_actor_id(PLAYER_C_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    service_client
+        .request_coverage(
+            CoverageKind::LaunchedApp,
+            Some(target),
+            "event 3".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    service_client
+        .request_coverage(
+            CoverageKind::Custom,
+            Some(target),
+            "event 4".into(),
+        )
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    // First page: cursor=None, limit=2 → returns IDs 1,2; next_cursor=Some(3).
+    let page1 = service_client
+        .get_coverage_queue(None, 2)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(page1.items.len(), 2, "first page should have 2 items");
+    assert_eq!(page1.items[0].id, 1, "first item id should be 1");
+    assert_eq!(page1.items[1].id, 2, "second item id should be 2");
+    assert_eq!(page1.next_cursor, Some(3), "next_cursor should be 3");
+
+    // Second page: cursor=Some(3), limit=10 → returns IDs 3,4,5; next_cursor=None.
+    let page2 = service_client
+        .get_coverage_queue(Some(3), 10)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(page2.items.len(), 3, "second page should have 3 items");
+    assert_eq!(page2.items[0].id, 3, "first item on second page id should be 3");
+    assert_eq!(page2.items[1].id, 4, "second item on second page id should be 4");
+    assert_eq!(page2.items[2].id, 5, "third item on second page id should be 5");
+    assert_eq!(page2.next_cursor, None, "next_cursor should be None on last page");
+}
+
+// ── MarkCovered tests ─────────────────────────────────────────────────────────
+
+/// Non-admin calling MarkCovered returns Unauthorized; entry still has chat_msg_id == None.
+#[tokio::test]
+async fn test_mark_covered_admin_only() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    // Post one coverage request from PLAYER_A.
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    service_client
+        .request_coverage(
+            CoverageKind::MarketResolved,
+            Some(target),
+            "event to cover".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    // PLAYER_B tries to MarkCovered — not admin.
+    let mark_result = service_client
+        .mark_covered(1u64, 999u64)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mark_result,
+        Err(aan_tv_client::Error::Unauthorized),
+        "non-admin must not be able to mark a coverage entry"
+    );
+
+    // Verify entry still has chat_msg_id == None.
+    let page = service_client
+        .get_coverage_queue(None, 10)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1, "queue should still have the entry");
+    assert_eq!(
+        page.items[0].chat_msg_id, None,
+        "chat_msg_id must remain None after failed MarkCovered"
+    );
+}
+
+/// Happy path: admin marks coverage entry → Ok(()), chat_msg_id updated.
+#[tokio::test]
+async fn test_mark_covered_happy() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    service_client
+        .request_coverage(
+            CoverageKind::BountyCompleted,
+            Some(target),
+            "bounty completed".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    // Admin marks it with chat_msg_id = 12345.
+    let mark_result = service_client
+        .mark_covered(1u64, 12345u64)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(mark_result, Ok(()), "admin MarkCovered should succeed");
+
+    // Verify chat_msg_id updated in the queue.
+    let page = service_client
+        .get_coverage_queue(None, 10)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1, "queue should still have the entry (append-only)");
+    assert_eq!(
+        page.items[0].chat_msg_id,
+        Some(12345u64),
+        "chat_msg_id should be updated to 12345"
+    );
+}
+
+/// Unknown coverage_id → Err(CoverageNotFound).
+#[tokio::test]
+async fn test_mark_covered_unknown_id_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let mark_result = service_client
+        .mark_covered(999u64, 1u64)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mark_result,
+        Err(aan_tv_client::Error::CoverageNotFound),
+        "unknown coverage_id must return CoverageNotFound"
+    );
+}
+
+/// Marking twice: second call returns Err(AlreadyCovered).
+#[tokio::test]
+async fn test_mark_covered_double_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let target: ActorId = ActorId::from(TARGET_PROGRAM_ID);
+    service_client
+        .request_coverage(
+            CoverageKind::MatchSettled,
+            Some(target),
+            "match settled".into(),
+        )
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(COVERAGE_FEE)
+        .await
+        .unwrap()
+        .expect("request_coverage should succeed");
+
+    // First mark — should succeed.
+    service_client
+        .mark_covered(1u64, 100u64)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap()
+        .expect("first mark_covered should succeed");
+
+    // Second mark — should fail with AlreadyCovered.
+    let second_mark = service_client
+        .mark_covered(1u64, 200u64)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        second_mark,
+        Err(aan_tv_client::Error::AlreadyCovered),
+        "second mark_covered must return AlreadyCovered"
     );
 }

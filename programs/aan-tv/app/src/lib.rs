@@ -76,6 +76,15 @@ pub struct CoverageRequest {
     pub chat_msg_id: Option<u64>,
 }
 
+// ── CoverageQueuePage ─────────────────────────────────────────────────────────
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct CoverageQueuePage {
+    pub items: alloc::vec::Vec<CoverageRequest>,
+    pub next_cursor: Option<CoverageId>,
+}
+
 // ── Error ────────────────────────────────────────────────────────────────────
 #[derive(
     Encode, Decode, TypeInfo, Clone, Copy, Debug, PartialEq, Eq,
@@ -462,6 +471,128 @@ impl AanTv {
     #[export]
     pub fn get_match(&self, match_id: MatchId) -> Option<Match> {
         self.state.borrow().matches.get(&match_id).cloned()
+    }
+
+    /// Request coverage for an on-chain event. Caller must attach at least `coverage_fee` VARA.
+    ///
+    /// Refund correctness (sails-rs 0.10.x):
+    ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+    ///   - Any Err: full `value` returned via `CommandReply::with_value(value)`.
+    ///   DO NOT use `msg::send` for refunds.
+    #[export]
+    pub fn request_coverage(
+        &mut self,
+        event_kind: CoverageKind,
+        target_program: Option<ActorId>,
+        hint: String,
+    ) -> CommandReply<Result<CoverageId, Error>> {
+        let value = msg::value();
+        let caller = msg::source();
+        let mut state = self.state.borrow_mut();
+        let coverage_fee = state.coverage_fee;
+
+        // Underpayment guard: full refund via reply.
+        if value < coverage_fee {
+            return CommandReply::new(Err(Error::InsufficientPayment)).with_value(value);
+        }
+
+        let excess = value - coverage_fee;
+
+        // Hint length guard: must be <= 240 UTF-8 bytes.
+        if hint.as_bytes().len() > 240 {
+            return CommandReply::new(Err(Error::InvalidArg)).with_value(value);
+        }
+
+        // Anti self-promotion: requester must not target themselves.
+        if target_program == Some(caller) {
+            return CommandReply::new(Err(Error::SelfCover)).with_value(value);
+        }
+
+        // Overflow-safe coverage ID allocation.
+        let next = match state.next_coverage_id.checked_add(1) {
+            Some(n) => n,
+            None => {
+                return CommandReply::new(Err(Error::ArithmeticOverflow)).with_value(value);
+            }
+        };
+
+        let coverage_id = state.next_coverage_id;
+        state.next_coverage_id = next;
+
+        let entry = CoverageRequest {
+            id: coverage_id,
+            requester: caller,
+            event_kind,
+            target_program,
+            hint,
+            paid: coverage_fee, // record actual fee, not value — excess goes back via reply
+            posted_at_block: exec::block_height(),
+            chat_msg_id: None,
+        };
+
+        state.coverage_queue.insert(coverage_id, entry);
+
+        // Refund excess (with_value(0) is a no-op for exact payment).
+        CommandReply::new(Ok(coverage_id)).with_value(excess)
+    }
+
+    /// Read paginated coverage queue. Returns up to `limit` entries starting from `cursor`.
+    ///
+    /// Cursor semantics: `None` starts from ID 1; `Some(n)` starts from ID n.
+    /// Bot uses `next_cursor` as the cursor for the next poll (incremental fetch).
+    #[export]
+    pub fn get_coverage_queue(
+        &self,
+        cursor: Option<CoverageId>,
+        limit: u32,
+    ) -> CoverageQueuePage {
+        let state = self.state.borrow();
+        let start_id = cursor.unwrap_or(1);
+        let limit = limit.min(100) as usize;
+
+        let mut items = alloc::vec::Vec::new();
+        for (&id, entry) in state.coverage_queue.range(start_id..) {
+            if items.len() >= limit {
+                break;
+            }
+            items.push(entry.clone());
+            let _ = id; // suppress unused warning — id used in range key
+        }
+
+        let next_cursor = if items.len() == limit {
+            items.last().map(|e| e.id + 1)
+        } else {
+            None
+        };
+
+        CoverageQueuePage { items, next_cursor }
+    }
+
+    /// Mark a coverage entry as covered by recording the bot's chat message ID.
+    ///
+    /// Admin only. Append-only: never removes entries (invariant #7).
+    #[export]
+    pub fn mark_covered(&mut self, coverage_id: CoverageId, chat_msg_id: u64) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+
+        // Auth guard: only admin may mark.
+        if msg::source() != state.admin {
+            return Err(Error::Unauthorized);
+        }
+
+        // Fetch entry or return CoverageNotFound.
+        let entry = match state.coverage_queue.get_mut(&coverage_id) {
+            Some(e) => e,
+            None => return Err(Error::CoverageNotFound),
+        };
+
+        // Idempotent rejection: already marked.
+        if entry.chat_msg_id.is_some() {
+            return Err(Error::AlreadyCovered);
+        }
+
+        entry.chat_msg_id = Some(chat_msg_id);
+        Ok(())
     }
 
     /// Private helper: compute SHA-256(move_value || salt).
