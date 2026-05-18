@@ -2072,7 +2072,9 @@ async fn test_resolve_one_committer_after_commit_deadline_pays_committer() {
 }
 
 /// Fix 2 (InCommit abandonment, neither commits): Both players fail to commit before
-/// commit_deadline. Resolve refunds both 1 VARA each and returns Err(MatchAbandoned).
+/// commit_deadline. Resolve refunds both 1 VARA each and returns Ok(MatchOutcome::Abandoned).
+/// (Refund sends must fire on Ok — returning Err would leave the queued sends unfired
+/// and the pot stuck in the program forever.)
 #[tokio::test]
 async fn test_resolve_neither_committed_after_deadline_refunds_both() {
     let (env, program) = deploy().await;
