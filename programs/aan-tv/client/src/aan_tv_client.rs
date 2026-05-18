@@ -36,6 +36,18 @@ pub mod aan_tv {
     use super::*;
     pub trait AanTv {
         type Env: sails_rs::client::GearEnv;
+        /// Accept an open 1v1 dice match as player_b. Caller must attach at least `buy_in` VARA.
+        ///
+        /// Refund correctness (sails-rs 0.10.x):
+        /// - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+        /// - Underpayment / any Err: full `value` returned via
+        /// `CommandReply::with_value(value)`.
+        /// DO NOT use `msg::send` for refunds — on Err paths, outbound sends do
+        /// NOT fire. `CommandReply::with_value` is the only reliable refund primitive.
+        fn accept_match(
+            &mut self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::AcceptMatch, Self::Env>;
         /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
         ///
         /// Refund correctness (sails-rs 0.10.x):
@@ -50,6 +62,12 @@ pub mod aan_tv {
     pub struct AanTvImpl;
     impl<E: sails_rs::client::GearEnv> AanTv for sails_rs::client::Service<AanTvImpl, E> {
         type Env = E;
+        fn accept_match(
+            &mut self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::AcceptMatch, Self::Env> {
+            self.pending_call((match_id,))
+        }
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env> {
             self.pending_call(())
         }
@@ -57,6 +75,7 @@ pub mod aan_tv {
 
     pub mod io {
         use super::*;
+        sails_rs::io_struct_impl!(AcceptMatch (match_id: u64) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
     }
 }

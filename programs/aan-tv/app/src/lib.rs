@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, rc::Rc, string::String};
 use core::cell::RefCell;
 use sails_rs::{
-    gstd::{msg, CommandReply},
+    gstd::{exec, msg, CommandReply},
     prelude::*,
 };
 
@@ -191,6 +191,71 @@ impl AanTv {
 
         // Refund excess (with_value(0) is a no-op for exact payment).
         CommandReply::new(Ok(match_id)).with_value(excess)
+    }
+
+    /// Accept an open 1v1 dice match as player_b. Caller must attach at least `buy_in` VARA.
+    ///
+    /// Refund correctness (sails-rs 0.10.x):
+    ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+    ///   - Underpayment / any Err: full `value` returned via
+    ///     `CommandReply::with_value(value)`.
+    ///   DO NOT use `msg::send` for refunds — on Err paths, outbound sends do
+    ///   NOT fire. `CommandReply::with_value` is the only reliable refund primitive.
+    #[export]
+    pub fn accept_match(&mut self, match_id: MatchId) -> CommandReply<Result<(), Error>> {
+        let value = msg::value();
+        let caller = msg::source();
+        let mut state = self.state.borrow_mut();
+        let buy_in = state.buy_in;
+
+        // Underpayment guard: full refund via reply.
+        if value < buy_in {
+            return CommandReply::new(Err(Error::InsufficientPayment)).with_value(value);
+        }
+
+        let excess = value - buy_in;
+
+        // Fetch match — full refund if not found.
+        let m = match state.matches.get_mut(&match_id) {
+            Some(m) => m,
+            None => {
+                return CommandReply::new(Err(Error::MatchNotFound)).with_value(value);
+            }
+        };
+
+        // Phase guard: only Open matches can be accepted.
+        if m.state != MatchState::Open {
+            return CommandReply::new(Err(Error::WrongPhase)).with_value(value);
+        }
+
+        // Anti-self-accept: player_a cannot be their own opponent.
+        if caller == m.player_a {
+            return CommandReply::new(Err(Error::Unauthorized)).with_value(value);
+        }
+
+        // Overflow-safe pot accumulation.
+        let new_pot = match m.pot.checked_add(buy_in) {
+            Some(p) => p,
+            None => {
+                return CommandReply::new(Err(Error::ArithmeticOverflow)).with_value(value);
+            }
+        };
+
+        // Set deadlines and transition state.
+        // TUNED FOR DEMO: 30 blocks (~90 s at 3 s/block) for Commit window,
+        // another 30 blocks for Reveal window. Production would use ~600 blocks
+        // (30 min) for Commit and ~1200 blocks (60 min) for Reveal.
+        let commit_deadline = exec::block_height() + 30;
+        let reveal_deadline = commit_deadline + 30;
+
+        m.player_b = Some(caller);
+        m.pot = new_pot;
+        m.commit_deadline_block = commit_deadline;
+        m.reveal_deadline_block = reveal_deadline;
+        m.state = MatchState::InCommit;
+
+        // Refund excess (with_value(0) is a no-op for exact payment).
+        CommandReply::new(Ok(())).with_value(excess)
     }
 }
 

@@ -21,6 +21,15 @@ constructor {
 };
 
 service AanTv {
+  /// Accept an open 1v1 dice match as player_b. Caller must attach at least `buy_in` VARA.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+  ///   - Underpayment / any Err: full `value` returned via
+  ///     `CommandReply::with_value(value)`.
+  ///   DO NOT use `msg::send` for refunds — on Err paths, outbound sends do
+  ///   NOT fire. `CommandReply::with_value` is the only reliable refund primitive.
+  AcceptMatch : (match_id: u64) -> result (null, Error);
   /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
   /// 
   /// Refund correctness (sails-rs 0.10.x):
