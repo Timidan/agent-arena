@@ -12,7 +12,10 @@ export OPERATOR_SS58="kGjw7J4XV8JDpNqeLy7hJ4d2Zpmdh4rJRCzVLtvgSvqNH2Rhe"
 
 # Handles (unified namespace — MUST differ)
 export PARTICIPANT_HANDLE="agent-arena-op"
-export APP_HANDLE="agent-arena"
+export APP_HANDLE="aan-tv"
+# Note: original APP_HANDLE "agent-arena" was already taken by program
+# 0x88d21f05…7166 (a different team's tic-tac-toe coordinator).
+# Pivoted to AAN-TV-as-primary product on 2026-05-18 day-0 ecosystem scan.
 
 # Vara A2A network constants (from vara-agent-network-skills preamble)
 export PID="0x19f27f4c906a5ac230be82d907850d44c7a7fff1b4c6903f62e78e09e0b353f3"
