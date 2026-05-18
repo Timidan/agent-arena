@@ -68,6 +68,24 @@ pub mod aan_tv {
         /// outbound sends are NOT executed. `CommandReply::with_value` is the
         /// only reliable refund primitive.
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env>;
+        /// Resolve a match after both players have revealed (or after the reveal deadline if only
+        /// one player revealed). Pays the winner 90% of the pot; the remaining 10% stays in
+        /// the program as protocol cut (retrievable by admin via `sweep`).
+        ///
+        /// Anyone may call Resolve — the caller pays only gas and receives nothing.
+        ///
+        /// Decision matrix:
+        /// 1. Both revealed            → winner = higher mod-100 (ties go to player_a).
+        /// 2. One revealed + deadline passed → revealer wins by default.
+        /// 3. Neither revealed + deadline NOT passed → Err(DeadlineNotReached).
+        /// 4. Neither revealed + deadline passed → Err(DeadlineNotReached).
+        /// FUTURE WORK: refund both players in case 4 (match abandoned).
+        /// Currently we treat it identically to case 3; a future migration can add
+        /// an `Err(MatchAbandoned)` variant and bilateral refund path.
+        fn resolve(
+            &mut self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::Resolve, Self::Env>;
         /// Reveal the preimage (`move_value`, `salt`) behind a prior commitment. Free — no msg::value.
         ///
         /// The contract verifies `SHA-256(move_value || salt) == stored_commitment`.
@@ -79,6 +97,12 @@ pub mod aan_tv {
             move_value: u8,
             salt: [u8; 32],
         ) -> sails_rs::client::PendingCall<io::Reveal, Self::Env>;
+        /// Pull accumulated protocol fees to admin wallet.
+        ///
+        /// Only admin may call this. `amount` must not exceed the program's current
+        /// balance minus the existential deposit or the underlying send will fail
+        /// and propagate as `Err(RefundFailed)` — no special guard needed here.
+        fn sweep(&mut self, amount: u128) -> sails_rs::client::PendingCall<io::Sweep, Self::Env>;
         /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
         ///
         /// Used by off-chain clients and gtests to inspect match state without
@@ -108,6 +132,12 @@ pub mod aan_tv {
         fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env> {
             self.pending_call(())
         }
+        fn resolve(
+            &mut self,
+            match_id: u64,
+        ) -> sails_rs::client::PendingCall<io::Resolve, Self::Env> {
+            self.pending_call((match_id,))
+        }
         fn reveal(
             &mut self,
             match_id: u64,
@@ -115,6 +145,9 @@ pub mod aan_tv {
             salt: [u8; 32],
         ) -> sails_rs::client::PendingCall<io::Reveal, Self::Env> {
             self.pending_call((match_id, move_value, salt))
+        }
+        fn sweep(&mut self, amount: u128) -> sails_rs::client::PendingCall<io::Sweep, Self::Env> {
+            self.pending_call((amount,))
         }
         fn get_match(
             &self,
@@ -129,7 +162,9 @@ pub mod aan_tv {
         sails_rs::io_struct_impl!(AcceptMatch (match_id: u64) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(Commit (match_id: u64, commitment: [u8; 32]) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
+        sails_rs::io_struct_impl!(Resolve (match_id: u64) -> Result<ActorId, super::Error>);
         sails_rs::io_struct_impl!(Reveal (match_id: u64, move_value: u8, salt: [u8; 32]) -> Result<(), super::Error>);
+        sails_rs::io_struct_impl!(Sweep (amount: u128) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(GetMatch (match_id: u64) -> Option<super::Match>);
     }
 }

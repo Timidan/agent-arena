@@ -1,5 +1,5 @@
 use aan_tv_client::{AanTvClient, AanTvClientCtors, Match, MatchState, aan_tv::*};
-use sails_rs::{client::*, gtest::*};
+use sails_rs::{client::*, gtest::*, prelude::ActorId};
 use sha2::{Digest, Sha256};
 
 /// Helper: compute SHA-256(move_value || salt) for use in tests.
@@ -816,5 +816,652 @@ async fn test_reveal_stranger_rejected() {
         reveal_result,
         Err(aan_tv_client::Error::Unauthorized),
         "reveal from a stranger should return Unauthorized"
+    );
+}
+
+// ── Resolve tests ─────────────────────────────────────────────────────────────
+//
+// SHA-256 move choices used across resolve tests:
+//
+//  "Player A wins" case:
+//    move_a = 70, salt_a = [0xA1; 32] → reveal_a % 100 = 70
+//    move_b = 30, salt_b = [0xB1; 32] → reveal_b % 100 = 30
+//    70 > 30 → b (30) is NOT > a (70) → player_a wins.
+//
+//  "Tie goes to player_a" case:
+//    move_a = 55, salt_a = [0xA2; 32] → reveal_a % 100 = 55
+//    move_b = 55, salt_b = [0xB2; 32] → reveal_b % 100 = 55
+//    55 == 55 → b is NOT > a → player_a wins (tie breaks to player_a).
+//
+//  "Player B wins" case:
+//    move_a = 20, salt_a = [0xA3; 32] → reveal_a % 100 = 20
+//    move_b = 80, salt_b = [0xB3; 32] → reveal_b % 100 = 80
+//    80 > 20 → b > a → player_b wins.
+//
+// Payout math (protocol_bps = 1000 = 10%, pot = 2 VARA = 2_000_000_000_000):
+//   winner_cut = (2_000_000_000_000 * 9000) / 10_000 = 1_800_000_000_000
+//   protocol_cut = 2_000_000_000_000 - 1_800_000_000_000 = 200_000_000_000
+//
+// EXISTENTIAL_DEPOSIT = 1_000_000_000_000 (1 VARA).
+// After deploy: program.balance() == 1 VARA (existential deposit).
+// After both buy-ins: program.balance() == 3 VARA.
+// After resolve: program.balance() == 1 VARA (ED) + 0.2 VARA (protocol) = 1.2 VARA.
+// After sweep(0.2 VARA): program.balance() == 1 VARA (back to ED).
+
+const WINNER_CUT: u128 = 1_800_000_000_000; // 1.8 VARA
+const PROTOCOL_CUT: u128 = 200_000_000_000; // 0.2 VARA
+const EXISTENTIAL_DEPOSIT: u128 = 1_000_000_000_000; // 1 VARA
+
+/// Helper: run a full Open → Accept → Commit(A) → Commit(B) → Reveal(A) → Reveal(B)
+/// sequence and return the match_id and the pot size (2 VARA).
+///
+/// Uses the "Player A wins" move set (move_a=70, move_b=30) by default.
+async fn setup_revealed_match_a_wins(
+    service_client: &mut sails_rs::client::Service<AanTvImpl, GtestEnv>,
+) -> u64 {
+    // Open
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    // Accept
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Commit A: move_a=70, salt_a=[0xA1;32]
+    let salt_a: [u8; 32] = [0xA1; 32];
+    let commitment_a = make_commitment(70, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    // Commit B: move_b=30, salt_b=[0xB1;32]
+    let salt_b: [u8; 32] = [0xB1; 32];
+    let commitment_b = make_commitment(30, &salt_b);
+    service_client
+        .commit(match_id, commitment_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B commit should succeed");
+
+    // Reveal A: move_a=70 → 70%100=70
+    service_client
+        .reveal(match_id, 70, salt_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A reveal should succeed");
+
+    // Reveal B: move_b=30 → 30%100=30; 30 is NOT > 70, so player_a wins
+    service_client
+        .reveal(match_id, 30, salt_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B reveal should succeed");
+
+    match_id
+}
+
+/// Helper: run a full match with move values chosen so player_b wins (move_b=80 > move_a=20).
+async fn setup_revealed_match_b_wins(
+    service_client: &mut sails_rs::client::Service<AanTvImpl, GtestEnv>,
+) -> u64 {
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Commit A: move_a=20, salt_a=[0xA3;32]
+    let salt_a: [u8; 32] = [0xA3; 32];
+    let commitment_a = make_commitment(20, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    // Commit B: move_b=80, salt_b=[0xB3;32]
+    let salt_b: [u8; 32] = [0xB3; 32];
+    let commitment_b = make_commitment(80, &salt_b);
+    service_client
+        .commit(match_id, commitment_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B commit should succeed");
+
+    // Reveal A: 20%100=20
+    service_client
+        .reveal(match_id, 20, salt_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A reveal should succeed");
+
+    // Reveal B: 80%100=80; 80 > 20, so player_b wins
+    service_client
+        .reveal(match_id, 80, salt_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B reveal should succeed");
+
+    match_id
+}
+
+/// Happy path: player_a wins (reveal_a%100=70 > reveal_b%100=30).
+/// PLAYER_C calls Resolve.
+///
+/// Assertions:
+///   - Returns Ok(PLAYER_A_ID as ActorId).
+///   - match.winner == PLAYER_A, match.state == Resolved.
+///   - program balance decreased by exactly WINNER_CUT (1.8 VARA) — the payout left the program.
+///   - program retains exactly PROTOCOL_CUT (0.2 VARA) above the post-resolve residual:
+///     program.balance() == EXISTENTIAL_DEPOSIT + PROTOCOL_CUT == 1.2 VARA.
+///
+/// Funds conservation: PLAYER_A receives 1.8 VARA (in mailbox), program keeps 0.2 VARA.
+/// Total out = 1.8 VARA; total retained = 0.2 VARA; total in = 2 VARA. Balanced.
+#[tokio::test]
+async fn test_resolve_pays_winner_90_pct_and_protocol_10_pct() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_after_deploy = program.balance();
+    assert_eq!(prog_balance_after_deploy, EXISTENTIAL_DEPOSIT, "deploy baseline == ED");
+
+    let match_id = setup_revealed_match_a_wins(&mut service_client).await;
+
+    // After two buy-ins: ED + 2 VARA in program.
+    let prog_balance_before_resolve = program.balance();
+    assert_eq!(
+        prog_balance_before_resolve,
+        EXISTENTIAL_DEPOSIT + TWO_VARA,
+        "program should hold ED + 2 VARA before resolve"
+    );
+
+    // PLAYER_C calls resolve — they pay gas, A/B balances only move by payout.
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    let winner_actor: ActorId = resolve_result.expect("resolve should succeed");
+    assert_eq!(
+        winner_actor,
+        ActorId::from(PLAYER_A_ID),
+        "winner must be PLAYER_A"
+    );
+
+    // Program must have sent 1.8 VARA to winner — program balance drops by WINNER_CUT.
+    let prog_balance_after_resolve = program.balance();
+    assert_eq!(
+        prog_balance_before_resolve - prog_balance_after_resolve,
+        WINNER_CUT,
+        "program should have paid out exactly WINNER_CUT (1.8 VARA) to winner"
+    );
+
+    // Program retains ED + 0.2 VARA (the protocol cut).
+    assert_eq!(
+        prog_balance_after_resolve,
+        EXISTENTIAL_DEPOSIT + PROTOCOL_CUT,
+        "program balance == ED + protocol_cut after resolve"
+    );
+
+    // Verify match state via get_match.
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.state, MatchState::Resolved, "match must be Resolved");
+    assert_eq!(
+        m.winner,
+        Some(ActorId::from(PLAYER_A_ID)),
+        "match.winner must be PLAYER_A"
+    );
+}
+
+/// Tie case: reveal_a%100 == reveal_b%100 → ties go to player_a per spec.
+///
+/// Move set: move_a=55 (55%100=55), move_b=55 (55%100=55). b NOT > a → player_a wins.
+#[tokio::test]
+async fn test_resolve_tie_goes_to_player_a() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    // Set up a match with tied reveals.
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Both commit 55 with distinct salts.
+    let salt_a: [u8; 32] = [0xA2; 32];
+    let commitment_a = make_commitment(55, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    let salt_b: [u8; 32] = [0xB2; 32];
+    let commitment_b = make_commitment(55, &salt_b);
+    service_client
+        .commit(match_id, commitment_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B commit should succeed");
+
+    service_client
+        .reveal(match_id, 55, salt_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A reveal should succeed");
+
+    service_client
+        .reveal(match_id, 55, salt_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B reveal should succeed");
+
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    let winner_actor = resolve_result.expect("resolve should succeed on tie");
+    assert_eq!(
+        winner_actor,
+        ActorId::from(PLAYER_A_ID),
+        "tie must go to player_a per spec"
+    );
+
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.winner, Some(ActorId::from(PLAYER_A_ID)), "match.winner == PLAYER_A on tie");
+}
+
+/// Player B wins when reveal_b%100 > reveal_a%100.
+///
+/// Move set: move_a=20 (20%100=20), move_b=80 (80%100=80). 80 > 20 → player_b wins.
+///
+/// Assertions:
+///   - Returns Ok(PLAYER_B_ID).
+///   - program balance decreased by WINNER_CUT.
+///   - Funds conservation holds: ED + 2 VARA in → ED + 0.2 VARA retained + 1.8 VARA paid out.
+#[tokio::test]
+async fn test_resolve_player_b_wins_when_higher() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let match_id = setup_revealed_match_b_wins(&mut service_client).await;
+
+    let prog_balance_before = program.balance();
+    assert_eq!(prog_balance_before, EXISTENTIAL_DEPOSIT + TWO_VARA, "before resolve: ED + 2 VARA");
+
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    let winner_actor = resolve_result.expect("resolve should succeed");
+    assert_eq!(
+        winner_actor,
+        ActorId::from(PLAYER_B_ID),
+        "PLAYER_B (80 mod 100) beats PLAYER_A (20 mod 100)"
+    );
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before - prog_balance_after,
+        WINNER_CUT,
+        "program paid out exactly WINNER_CUT to PLAYER_B"
+    );
+    assert_eq!(
+        prog_balance_after,
+        EXISTENTIAL_DEPOSIT + PROTOCOL_CUT,
+        "protocol cut (0.2 VARA) retained in program"
+    );
+
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.state, MatchState::Resolved);
+    assert_eq!(m.winner, Some(ActorId::from(PLAYER_B_ID)));
+}
+
+/// Idempotent rejection: second call to Resolve on an already-Resolved match returns WrongPhase.
+/// Balances must not change on the second call.
+#[tokio::test]
+async fn test_resolve_idempotent_second_call_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let match_id = setup_revealed_match_a_wins(&mut service_client).await;
+
+    // First resolve: should succeed.
+    let first_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+    assert!(first_result.is_ok(), "first resolve should succeed");
+
+    let prog_balance_after_first = program.balance();
+
+    // Second resolve: match is Resolved → WrongPhase.
+    let second_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(
+        second_result,
+        Err(aan_tv_client::Error::WrongPhase),
+        "second resolve must return WrongPhase (match already Resolved)"
+    );
+
+    // Program balance must not change on second call.
+    let prog_balance_after_second = program.balance();
+    assert_eq!(
+        prog_balance_after_first, prog_balance_after_second,
+        "program balance must not change on second resolve attempt"
+    );
+}
+
+/// Resolve during InCommit phase (both players committed, match state is InReveal after both
+/// commit — but here we only accept with no commits yet, so state is InCommit).
+/// Resolve must return WrongPhase.
+#[tokio::test]
+async fn test_resolve_during_commit_phase_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    // Open + Accept → state is InCommit.
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Resolve while in InCommit → WrongPhase.
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolve_result,
+        Err(aan_tv_client::Error::WrongPhase),
+        "resolve during InCommit phase must return WrongPhase"
+    );
+}
+
+/// Resolve before reveal_deadline_block when only one player has revealed: DeadlineNotReached.
+///
+/// Setup: Open → Accept → Commit(A) → Commit(B) → Reveal(A only).
+/// Block height is well below reveal_deadline (set at AcceptMatch as block_height + 60).
+/// The sails gtest auto-runs a few blocks per message but nowhere near 60.
+#[tokio::test]
+async fn test_resolve_before_reveal_deadline_with_only_one_reveal_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Both commit to advance to InReveal.
+    let salt_a: [u8; 32] = [0xA1; 32];
+    let commitment_a = make_commitment(70, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    let salt_b: [u8; 32] = [0xB1; 32];
+    let commitment_b = make_commitment(30, &salt_b);
+    service_client
+        .commit(match_id, commitment_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B commit should succeed");
+
+    // Only PLAYER_A reveals.
+    service_client
+        .reveal(match_id, 70, salt_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A reveal should succeed");
+
+    // Resolve immediately (deadline not reached — each message advances block by ~1).
+    // reveal_deadline_block was set at AcceptMatch time as block_height + 60.
+    // We've only consumed ~5-10 blocks; deadline is at ~60+.
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolve_result,
+        Err(aan_tv_client::Error::DeadlineNotReached),
+        "resolve before reveal deadline with one reveal must return DeadlineNotReached"
+    );
+}
+
+/// Resolve with unknown match_id returns MatchNotFound.
+#[tokio::test]
+async fn test_resolve_unknown_match_rejected() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let resolve_result = service_client
+        .resolve(999u64)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolve_result,
+        Err(aan_tv_client::Error::MatchNotFound),
+        "resolve of unknown match_id must return MatchNotFound"
+    );
+}
+
+// ── Sweep tests ───────────────────────────────────────────────────────────────
+
+/// Non-admin calling Sweep returns Unauthorized. Program balance unchanged.
+#[tokio::test]
+async fn test_sweep_admin_only() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    // PLAYER_A tries to sweep — not the admin.
+    let sweep_result = service_client
+        .sweep(PROTOCOL_CUT)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sweep_result,
+        Err(aan_tv_client::Error::Unauthorized),
+        "non-admin sweep must return Unauthorized"
+    );
+
+    // Program balance must be unchanged.
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must not change after unauthorized sweep attempt"
+    );
+}
+
+/// Admin can pull the accumulated protocol cut after a match resolves.
+///
+/// Setup: run a full match (PLAYER_A wins) → resolve → program has ED + 0.2 VARA.
+/// Admin sweeps 0.2 VARA → program back to ED (1 VARA).
+///
+/// Funds conservation:
+///   Total in: 2 VARA (buy-ins).
+///   Paid out to winner: 1.8 VARA.
+///   Swept by admin: 0.2 VARA.
+///   Net program delta (above ED): 0. Balanced.
+#[tokio::test]
+async fn test_sweep_admin_can_pull_protocol_cut() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    // Run a full match to completion.
+    let match_id = setup_revealed_match_a_wins(&mut service_client).await;
+    service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("resolve should succeed");
+
+    // At this point: program balance == ED + PROTOCOL_CUT == 1.2 VARA.
+    let prog_balance_before_sweep = program.balance();
+    assert_eq!(
+        prog_balance_before_sweep,
+        EXISTENTIAL_DEPOSIT + PROTOCOL_CUT,
+        "before sweep: program holds ED + protocol_cut"
+    );
+
+    // Admin sweeps the protocol cut.
+    let sweep_result = service_client
+        .sweep(PROTOCOL_CUT)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(sweep_result, Ok(()), "admin sweep should succeed");
+
+    // Program balance must be back to ED (all fees swept).
+    let prog_balance_after_sweep = program.balance();
+    assert_eq!(
+        prog_balance_before_sweep - prog_balance_after_sweep,
+        PROTOCOL_CUT,
+        "program balance should decrease by exactly PROTOCOL_CUT on sweep"
+    );
+    assert_eq!(
+        prog_balance_after_sweep,
+        EXISTENTIAL_DEPOSIT,
+        "after sweep: program balance == ED"
+    );
+}
+
+/// Sweeping more than the program balance (beyond ED) fails gracefully with RefundFailed.
+/// Program balance is unchanged.
+///
+/// A fresh deploy has only ED in the program. Sweeping 100 VARA triggers a failed send.
+#[tokio::test]
+async fn test_sweep_more_than_balance_fails_gracefully() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+    assert_eq!(prog_balance_before, EXISTENTIAL_DEPOSIT, "fresh deploy: program holds only ED");
+
+    // Admin tries to sweep 100 VARA when the program only has ED (1 VARA).
+    let sweep_result = service_client
+        .sweep(100 * ONE_VARA)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sweep_result,
+        Err(aan_tv_client::Error::RefundFailed),
+        "sweeping more than program balance should return RefundFailed"
+    );
+
+    // Program balance must be unchanged.
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must not change after failed sweep"
     );
 }

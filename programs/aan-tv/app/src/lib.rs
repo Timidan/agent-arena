@@ -352,6 +352,108 @@ impl AanTv {
         Ok(())
     }
 
+    /// Resolve a match after both players have revealed (or after the reveal deadline if only
+    /// one player revealed). Pays the winner 90% of the pot; the remaining 10% stays in
+    /// the program as protocol cut (retrievable by admin via `sweep`).
+    ///
+    /// Anyone may call Resolve — the caller pays only gas and receives nothing.
+    ///
+    /// Decision matrix:
+    ///  1. Both revealed            → winner = higher mod-100 (ties go to player_a).
+    ///  2. One revealed + deadline passed → revealer wins by default.
+    ///  3. Neither revealed + deadline NOT passed → Err(DeadlineNotReached).
+    ///  4. Neither revealed + deadline passed → Err(DeadlineNotReached).
+    ///     FUTURE WORK: refund both players in case 4 (match abandoned).
+    ///     Currently we treat it identically to case 3; a future migration can add
+    ///     an `Err(MatchAbandoned)` variant and bilateral refund path.
+    #[export]
+    pub fn resolve(&mut self, match_id: MatchId) -> Result<ActorId, Error> {
+        let mut state = self.state.borrow_mut();
+
+        let m = match state.matches.get_mut(&match_id) {
+            Some(m) => m,
+            None => return Err(Error::MatchNotFound),
+        };
+
+        // Idempotent rejection: already resolved.
+        if m.state == MatchState::Resolved {
+            return Err(Error::WrongPhase);
+        }
+
+        // Must be in InReveal phase to settle.
+        if m.state != MatchState::InReveal {
+            return Err(Error::WrongPhase);
+        }
+
+        let player_a = m.player_a;
+        let player_b = m.player_b.expect("InReveal requires player_b");
+
+        let winner: ActorId = match (m.reveal_a, m.reveal_b) {
+            (Some(ra), Some(rb)) => {
+                // Both revealed: higher mod-100 wins; ties go to player_a.
+                let a = (ra as u128) % 100;
+                let b = (rb as u128) % 100;
+                if b > a { player_b } else { player_a }
+            }
+            (Some(_), None) => {
+                // Only player_a revealed; need deadline to have passed.
+                if exec::block_height() <= m.reveal_deadline_block {
+                    return Err(Error::DeadlineNotReached);
+                }
+                player_a
+            }
+            (None, Some(_)) => {
+                // Only player_b revealed; need deadline to have passed.
+                if exec::block_height() <= m.reveal_deadline_block {
+                    return Err(Error::DeadlineNotReached);
+                }
+                player_b
+            }
+            (None, None) => {
+                // Neither revealed. FUTURE WORK: refund both if deadline passed.
+                // For MVP, return DeadlineNotReached in all cases.
+                return Err(Error::DeadlineNotReached);
+            }
+        };
+
+        let pot = m.pot;
+        let protocol_bps = state.protocol_bps;
+
+        // winner_cut = pot * (10_000 - protocol_bps) / 10_000
+        // e.g. pot=2_000_000_000_000, bps=1000 → winner_cut=1_800_000_000_000
+        let winner_cut = (pot * (10_000 - protocol_bps as u128)) / 10_000;
+
+        // Settle the match before the outbound send so state is consistent.
+        {
+            let m = state.matches.get_mut(&match_id).expect("checked above");
+            m.winner = Some(winner);
+            m.state = MatchState::Resolved;
+        }
+
+        // Send winner their cut. Gas=0: the value transfer alone carries cost.
+        // On gtest, this transfers `winner_cut` from program balance to winner.
+        msg::send_bytes_with_gas(winner, sails_rs::Vec::new(), 0, winner_cut)
+            .map_err(|_| Error::RefundFailed)?;
+
+        Ok(winner)
+    }
+
+    /// Pull accumulated protocol fees to admin wallet.
+    ///
+    /// Only admin may call this. `amount` must not exceed the program's current
+    /// balance minus the existential deposit or the underlying send will fail
+    /// and propagate as `Err(RefundFailed)` — no special guard needed here.
+    #[export]
+    pub fn sweep(&mut self, amount: u128) -> Result<(), Error> {
+        let admin = self.state.borrow().admin;
+        if msg::source() != admin {
+            return Err(Error::Unauthorized);
+        }
+        msg::send_bytes_with_gas(admin, sails_rs::Vec::new(), 0, amount)
+            .map_err(|_| Error::RefundFailed)?;
+        Ok(())
+    }
+
     /// Read accessor: returns the `Match` for `match_id`, or `None` if absent.
     ///
     /// Used by off-chain clients and gtests to inspect match state without
