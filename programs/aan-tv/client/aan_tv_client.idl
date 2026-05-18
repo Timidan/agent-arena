@@ -1,0 +1,8 @@
+constructor {
+  Create : ();
+};
+
+service AanTv {
+  DoSomething : () -> str;
+};
+
