@@ -88,20 +88,26 @@ pub mod aan_tv {
             target_program: Option<ActorId>,
             hint: String,
         ) -> sails_rs::client::PendingCall<io::RequestCoverage, Self::Env>;
-        /// Resolve a match after both players have revealed (or after the reveal deadline if only
-        /// one player revealed). Pays the winner 90% of the pot; the remaining 10% stays in
-        /// the program as protocol cut (retrievable by admin via `sweep`).
+        /// Resolve a match. Pays the winner 90% of the pot; the remaining 10% goes to
+        /// `protocol_balance` (retrievable by admin via `sweep`).
         ///
         /// Anyone may call Resolve — the caller pays only gas and receives nothing.
         ///
         /// Decision matrix:
-        /// 1. Both revealed            → winner = higher mod-100 (ties go to player_a).
-        /// 2. One revealed + deadline passed → revealer wins by default.
-        /// 3. Neither revealed + deadline NOT passed → Err(DeadlineNotReached).
-        /// 4. Neither revealed + deadline passed → Err(DeadlineNotReached).
-        /// FUTURE WORK: refund both players in case 4 (match abandoned).
-        /// Currently we treat it identically to case 3; a future migration can add
-        /// an `Err(MatchAbandoned)` variant and bilateral refund path.
+        ///
+        /// state == Open / Resolved → Err(WrongPhase)
+        ///
+        /// state == InCommit:
+        /// block <= commit_deadline → Err(DeadlineNotReached)
+        /// block >  commit_deadline, one committed → committer wins, 90% payout
+        /// block >  commit_deadline, neither committed → refund both, Err(MatchAbandoned)
+        ///
+        /// state == InReveal:
+        /// Both revealed → winner = higher mod-100 (ties go to player_a), payout
+        /// One revealed, deadline not passed → Err(DeadlineNotReached)
+        /// One revealed, deadline passed → revealer wins, payout
+        /// Neither revealed, deadline not passed → Err(DeadlineNotReached)
+        /// Neither revealed, deadline passed → refund both, Err(MatchAbandoned)
         fn resolve(
             &mut self,
             match_id: u64,
@@ -119,9 +125,10 @@ pub mod aan_tv {
         ) -> sails_rs::client::PendingCall<io::Reveal, Self::Env>;
         /// Pull accumulated protocol fees to admin wallet.
         ///
-        /// Only admin may call this. `amount` must not exceed the program's current
-        /// balance minus the existential deposit or the underlying send will fail
-        /// and propagate as `Err(RefundFailed)` — no special guard needed here.
+        /// Only admin may call this. `amount` must not exceed `protocol_balance`
+        /// (the accumulated protocol cut from resolved matches). Attempting to sweep
+        /// more than `protocol_balance` returns `Err(InsufficientFunds)` to prevent
+        /// the admin from draining funds that belong to active match pots.
         fn sweep(&mut self, amount: u128) -> sails_rs::client::PendingCall<io::Sweep, Self::Env>;
         /// Read paginated coverage queue. Returns up to `limit` entries starting from `cursor`.
         ///
@@ -228,12 +235,14 @@ pub mod aan_tv {
 pub enum Error {
     Unauthorized,
     InsufficientPayment,
+    InsufficientFunds,
     MatchNotFound,
     WrongPhase,
     DuplicateCommit,
     RevealMismatch,
     DeadlinePassed,
     DeadlineNotReached,
+    MatchAbandoned,
     CoverageNotFound,
     AlreadyCovered,
     SelfCover,

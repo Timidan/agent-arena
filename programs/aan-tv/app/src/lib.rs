@@ -96,6 +96,7 @@ pub enum Error {
     Unauthorized,
     // Payment errors
     InsufficientPayment,
+    InsufficientFunds,   // sweep amount exceeds protocol_balance
     // Match lifecycle errors
     MatchNotFound,
     WrongPhase,
@@ -103,6 +104,7 @@ pub enum Error {
     RevealMismatch,
     DeadlinePassed,
     DeadlineNotReached,
+    MatchAbandoned,      // resolve returned after refunding both players (no winner)
     // Coverage errors
     CoverageNotFound,
     AlreadyCovered,
@@ -118,13 +120,14 @@ pub enum Error {
 // ── Service state (shared via Rc<RefCell<>>) ─────────────────────────────────
 pub struct AanTvState {
     pub admin: ActorId,
-    pub buy_in: u128,         // 1 VARA = 1_000_000_000_000 plancks
-    pub protocol_bps: u16,    // 1000 = 10%
-    pub coverage_fee: u128,   // 0.1 VARA = 100_000_000_000 plancks
+    pub buy_in: u128,              // 1 VARA = 1_000_000_000_000 plancks
+    pub protocol_bps: u16,         // 1000 = 10%
+    pub coverage_fee: u128,        // 0.1 VARA = 100_000_000_000 plancks
     pub next_match_id: MatchId,
     pub next_coverage_id: CoverageId,
     pub matches: BTreeMap<MatchId, Match>,
     pub coverage_queue: BTreeMap<CoverageId, CoverageRequest>,
+    pub protocol_balance: u128,    // accumulated protocol cut from resolved matches, eligible for Sweep
 }
 
 impl AanTvState {
@@ -138,6 +141,7 @@ impl AanTvState {
             next_coverage_id: 1,
             matches: BTreeMap::new(),
             coverage_queue: BTreeMap::new(),
+            protocol_balance: 0,
         }
     }
 }
@@ -252,11 +256,11 @@ impl AanTv {
         };
 
         // Set deadlines and transition state.
-        // TUNED FOR DEMO: 30 blocks (~90 s at 3 s/block) for Commit window,
-        // another 30 blocks for Reveal window. Production would use ~600 blocks
-        // (30 min) for Commit and ~1200 blocks (60 min) for Reveal.
-        let commit_deadline = exec::block_height() + 30;
-        let reveal_deadline = commit_deadline + 30;
+        // TUNED FOR DEMO: 200 blocks (~10 min at 3 s/block) for Commit window,
+        // another 200 blocks (~10 more min) for Reveal window. Sufficient for
+        // human-coordinated demos. Production would use ~600/1200 blocks.
+        let commit_deadline = exec::block_height() + 200;
+        let reveal_deadline = commit_deadline + 200;
 
         m.player_b = Some(caller);
         m.pot = new_pot;
@@ -361,20 +365,26 @@ impl AanTv {
         Ok(())
     }
 
-    /// Resolve a match after both players have revealed (or after the reveal deadline if only
-    /// one player revealed). Pays the winner 90% of the pot; the remaining 10% stays in
-    /// the program as protocol cut (retrievable by admin via `sweep`).
+    /// Resolve a match. Pays the winner 90% of the pot; the remaining 10% goes to
+    /// `protocol_balance` (retrievable by admin via `sweep`).
     ///
     /// Anyone may call Resolve — the caller pays only gas and receives nothing.
     ///
     /// Decision matrix:
-    ///  1. Both revealed            → winner = higher mod-100 (ties go to player_a).
-    ///  2. One revealed + deadline passed → revealer wins by default.
-    ///  3. Neither revealed + deadline NOT passed → Err(DeadlineNotReached).
-    ///  4. Neither revealed + deadline passed → Err(DeadlineNotReached).
-    ///     FUTURE WORK: refund both players in case 4 (match abandoned).
-    ///     Currently we treat it identically to case 3; a future migration can add
-    ///     an `Err(MatchAbandoned)` variant and bilateral refund path.
+    ///
+    ///  state == Open / Resolved → Err(WrongPhase)
+    ///
+    ///  state == InCommit:
+    ///    block <= commit_deadline → Err(DeadlineNotReached)
+    ///    block >  commit_deadline, one committed → committer wins, 90% payout
+    ///    block >  commit_deadline, neither committed → refund both, Err(MatchAbandoned)
+    ///
+    ///  state == InReveal:
+    ///    Both revealed → winner = higher mod-100 (ties go to player_a), payout
+    ///    One revealed, deadline not passed → Err(DeadlineNotReached)
+    ///    One revealed, deadline passed → revealer wins, payout
+    ///    Neither revealed, deadline not passed → Err(DeadlineNotReached)
+    ///    Neither revealed, deadline passed → refund both, Err(MatchAbandoned)
     #[export]
     pub fn resolve(&mut self, match_id: MatchId) -> Result<ActorId, Error> {
         let mut state = self.state.borrow_mut();
@@ -389,14 +399,95 @@ impl AanTv {
             return Err(Error::WrongPhase);
         }
 
-        // Must be in InReveal phase to settle.
-        if m.state != MatchState::InReveal {
+        // Open matches cannot be resolved yet (player_b not present).
+        if m.state == MatchState::Open {
             return Err(Error::WrongPhase);
         }
 
         let player_a = m.player_a;
-        let player_b = m.player_b.expect("InReveal requires player_b");
+        let player_b = m.player_b.expect("InCommit/InReveal requires player_b");
 
+        // ── InCommit abandonment path ────────────────────────────────────────
+        if m.state == MatchState::InCommit {
+            if exec::block_height() <= m.commit_deadline_block {
+                return Err(Error::DeadlineNotReached);
+            }
+            // Deadline passed — check who committed.
+            let committed_a = m.commit_a.is_some();
+            let committed_b = m.commit_b.is_some();
+
+            match (committed_a, committed_b) {
+                (true, false) => {
+                    // player_a committed, player_b didn't → player_a wins by default.
+                    let pot = m.pot;
+                    let protocol_bps = state.protocol_bps;
+                    let winner_cut = (pot * (10_000 - protocol_bps as u128)) / 10_000;
+                    let protocol_cut = pot - winner_cut;
+
+                    // Increment protocol_balance before send; roll back on failure.
+                    state.protocol_balance = state.protocol_balance
+                        .checked_add(protocol_cut)
+                        .ok_or(Error::ArithmeticOverflow)?;
+
+                    // Queue payout BEFORE state mutation.
+                    msg::send_bytes_with_gas(player_a, sails_rs::Vec::new(), 0, winner_cut)
+                        .map_err(|_| {
+                            state.protocol_balance -= protocol_cut;
+                            Error::RefundFailed
+                        })?;
+
+                    // Mutate state only after send queued successfully.
+                    let m = state.matches.get_mut(&match_id).expect("checked above");
+                    m.winner = Some(player_a);
+                    m.state = MatchState::Resolved;
+                    return Ok(player_a);
+                }
+                (false, true) => {
+                    // player_b committed, player_a didn't → player_b wins by default.
+                    let pot = m.pot;
+                    let protocol_bps = state.protocol_bps;
+                    let winner_cut = (pot * (10_000 - protocol_bps as u128)) / 10_000;
+                    let protocol_cut = pot - winner_cut;
+
+                    state.protocol_balance = state.protocol_balance
+                        .checked_add(protocol_cut)
+                        .ok_or(Error::ArithmeticOverflow)?;
+
+                    msg::send_bytes_with_gas(player_b, sails_rs::Vec::new(), 0, winner_cut)
+                        .map_err(|_| {
+                            state.protocol_balance -= protocol_cut;
+                            Error::RefundFailed
+                        })?;
+
+                    let m = state.matches.get_mut(&match_id).expect("checked above");
+                    m.winner = Some(player_b);
+                    m.state = MatchState::Resolved;
+                    return Ok(player_b);
+                }
+                (false, false) | (true, true) => {
+                    // Neither committed (or both — impossible to reach InCommit with both since
+                    // both-commit auto-advances to InReveal, so (true,true) can't happen here).
+                    // Refund both players their buy_in halves.
+                    // Per pricing.md: queued sends only fire on Ok return. If either send
+                    // call returns Err, we return Err and neither send fires.
+                    let refund_each = m.pot / 2;
+                    msg::send_bytes_with_gas(player_a, sails_rs::Vec::new(), 0, refund_each)
+                        .map_err(|_| Error::RefundFailed)?;
+                    msg::send_bytes_with_gas(player_b, sails_rs::Vec::new(), 0, refund_each)
+                        .map_err(|_| Error::RefundFailed)?;
+
+                    // Mutate state only after both sends queued successfully.
+                    let m = state.matches.get_mut(&match_id).expect("checked above");
+                    m.state = MatchState::Resolved;
+                    m.winner = None;
+                    // protocol_balance unchanged — no cut taken on abandoned match.
+                    return Err(Error::MatchAbandoned);
+                }
+            }
+        }
+
+        // ── InReveal settlement path ─────────────────────────────────────────
+        // m.state must be InReveal here.
         let winner: ActorId = match (m.reveal_a, m.reveal_b) {
             (Some(ra), Some(rb)) => {
                 // Both revealed: higher mod-100 wins; ties go to player_a.
@@ -419,9 +510,21 @@ impl AanTv {
                 player_b
             }
             (None, None) => {
-                // Neither revealed. FUTURE WORK: refund both if deadline passed.
-                // For MVP, return DeadlineNotReached in all cases.
-                return Err(Error::DeadlineNotReached);
+                // Neither revealed. Check reveal deadline.
+                if exec::block_height() <= m.reveal_deadline_block {
+                    return Err(Error::DeadlineNotReached);
+                }
+                // Deadline passed — refund both, mutate to Resolved.
+                let refund_each = m.pot / 2;
+                msg::send_bytes_with_gas(player_a, sails_rs::Vec::new(), 0, refund_each)
+                    .map_err(|_| Error::RefundFailed)?;
+                msg::send_bytes_with_gas(player_b, sails_rs::Vec::new(), 0, refund_each)
+                    .map_err(|_| Error::RefundFailed)?;
+
+                let m = state.matches.get_mut(&match_id).expect("checked above");
+                m.state = MatchState::Resolved;
+                m.winner = None;
+                return Err(Error::MatchAbandoned);
             }
         };
 
@@ -431,35 +534,55 @@ impl AanTv {
         // winner_cut = pot * (10_000 - protocol_bps) / 10_000
         // e.g. pot=2_000_000_000_000, bps=1000 → winner_cut=1_800_000_000_000
         let winner_cut = (pot * (10_000 - protocol_bps as u128)) / 10_000;
+        let protocol_cut = pot - winner_cut;
 
-        // Settle the match before the outbound send so state is consistent.
+        // Increment protocol_balance BEFORE send; roll back on failure.
+        state.protocol_balance = state.protocol_balance
+            .checked_add(protocol_cut)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        // Queue payout to winner FIRST. If this fails, undo the counter and
+        // leave match.state unchanged so resolve can be retried.
+        msg::send_bytes_with_gas(winner, sails_rs::Vec::new(), 0, winner_cut)
+            .map_err(|_| {
+                state.protocol_balance -= protocol_cut;
+                Error::RefundFailed
+            })?;
+
+        // Mutate match state only AFTER send queued successfully.
         {
             let m = state.matches.get_mut(&match_id).expect("checked above");
             m.winner = Some(winner);
             m.state = MatchState::Resolved;
         }
 
-        // Send winner their cut. Gas=0: the value transfer alone carries cost.
-        // On gtest, this transfers `winner_cut` from program balance to winner.
-        msg::send_bytes_with_gas(winner, sails_rs::Vec::new(), 0, winner_cut)
-            .map_err(|_| Error::RefundFailed)?;
-
         Ok(winner)
     }
 
     /// Pull accumulated protocol fees to admin wallet.
     ///
-    /// Only admin may call this. `amount` must not exceed the program's current
-    /// balance minus the existential deposit or the underlying send will fail
-    /// and propagate as `Err(RefundFailed)` — no special guard needed here.
+    /// Only admin may call this. `amount` must not exceed `protocol_balance`
+    /// (the accumulated protocol cut from resolved matches). Attempting to sweep
+    /// more than `protocol_balance` returns `Err(InsufficientFunds)` to prevent
+    /// the admin from draining funds that belong to active match pots.
     #[export]
     pub fn sweep(&mut self, amount: u128) -> Result<(), Error> {
-        let admin = self.state.borrow().admin;
-        if msg::source() != admin {
+        let mut state = self.state.borrow_mut();
+        if msg::source() != state.admin {
             return Err(Error::Unauthorized);
         }
+        if amount > state.protocol_balance {
+            return Err(Error::InsufficientFunds);
+        }
+        let admin = state.admin;
+        // Decrement BEFORE send. On send failure, restore and return Err.
+        state.protocol_balance -= amount;
         msg::send_bytes_with_gas(admin, sails_rs::Vec::new(), 0, amount)
-            .map_err(|_| Error::RefundFailed)?;
+            .map_err(|_| {
+                // Restore so admin can retry.
+                state.protocol_balance += amount;
+                Error::RefundFailed
+            })?;
         Ok(())
     }
 
@@ -644,12 +767,14 @@ mod tests {
     fn error_enum_round_trips_all_variants() {
         round_trip(Error::Unauthorized);
         round_trip(Error::InsufficientPayment);
+        round_trip(Error::InsufficientFunds);
         round_trip(Error::MatchNotFound);
         round_trip(Error::WrongPhase);
         round_trip(Error::DuplicateCommit);
         round_trip(Error::RevealMismatch);
         round_trip(Error::DeadlinePassed);
         round_trip(Error::DeadlineNotReached);
+        round_trip(Error::MatchAbandoned);
         round_trip(Error::CoverageNotFound);
         round_trip(Error::AlreadyCovered);
         round_trip(Error::SelfCover);
@@ -690,5 +815,6 @@ mod tests {
         assert_eq!(state.next_coverage_id, 1);
         assert!(state.matches.is_empty());
         assert!(state.coverage_queue.is_empty());
+        assert_eq!(state.protocol_balance, 0);
     }
 }

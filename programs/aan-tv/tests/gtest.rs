@@ -1221,11 +1221,12 @@ async fn test_resolve_idempotent_second_call_rejected() {
     );
 }
 
-/// Resolve during InCommit phase (both players committed, match state is InReveal after both
-/// commit — but here we only accept with no commits yet, so state is InCommit).
-/// Resolve must return WrongPhase.
+/// Resolve during InCommit phase before the commit deadline → DeadlineNotReached.
+///
+/// Open + Accept → state is InCommit. We resolve immediately without advancing blocks,
+/// so block_height is well below commit_deadline_block (set at block + 200).
 #[tokio::test]
-async fn test_resolve_during_commit_phase_rejected() {
+async fn test_resolve_during_commit_phase_before_deadline_rejected() {
     let (env, program) = deploy().await;
     let mut service_client = program.aan_tv();
 
@@ -1246,7 +1247,8 @@ async fn test_resolve_during_commit_phase_rejected() {
         .unwrap()
         .expect("accept_match should succeed");
 
-    // Resolve while in InCommit → WrongPhase.
+    // Resolve while in InCommit + before deadline → DeadlineNotReached.
+    // (commit_deadline_block = accept_block + 200; we've only advanced ~2 blocks.)
     let resolve_result = service_client
         .resolve(match_id)
         .with_actor_id(PLAYER_C_ID.into())
@@ -1255,16 +1257,16 @@ async fn test_resolve_during_commit_phase_rejected() {
 
     assert_eq!(
         resolve_result,
-        Err(aan_tv_client::Error::WrongPhase),
-        "resolve during InCommit phase must return WrongPhase"
+        Err(aan_tv_client::Error::DeadlineNotReached),
+        "resolve during InCommit before deadline must return DeadlineNotReached"
     );
 }
 
 /// Resolve before reveal_deadline_block when only one player has revealed: DeadlineNotReached.
 ///
 /// Setup: Open → Accept → Commit(A) → Commit(B) → Reveal(A only).
-/// Block height is well below reveal_deadline (set at AcceptMatch as block_height + 60).
-/// The sails gtest auto-runs a few blocks per message but nowhere near 60.
+/// Block height is well below reveal_deadline (set at AcceptMatch as block_height + 200).
+/// The sails gtest auto-runs a few blocks per message but nowhere near 200.
 #[tokio::test]
 async fn test_resolve_before_reveal_deadline_with_only_one_reveal_rejected() {
     let (env, program) = deploy().await;
@@ -1314,8 +1316,8 @@ async fn test_resolve_before_reveal_deadline_with_only_one_reveal_rejected() {
         .expect("PLAYER_A reveal should succeed");
 
     // Resolve immediately (deadline not reached — each message advances block by ~1).
-    // reveal_deadline_block was set at AcceptMatch time as block_height + 60.
-    // We've only consumed ~5-10 blocks; deadline is at ~60+.
+    // reveal_deadline_block was set at AcceptMatch time as block_height + 200.
+    // We've only consumed ~5-10 blocks; deadline is at ~200+.
     let resolve_result = service_client
         .resolve(match_id)
         .with_actor_id(PLAYER_C_ID.into())
@@ -1433,10 +1435,11 @@ async fn test_sweep_admin_can_pull_protocol_cut() {
     );
 }
 
-/// Sweeping more than the program balance (beyond ED) fails gracefully with RefundFailed.
+/// Sweeping more than protocol_balance fails with InsufficientFunds.
 /// Program balance is unchanged.
 ///
-/// A fresh deploy has only ED in the program. Sweeping 100 VARA triggers a failed send.
+/// A fresh deploy has protocol_balance=0. Sweeping 100 VARA is blocked before
+/// the send even fires (InsufficientFunds returned immediately).
 #[tokio::test]
 async fn test_sweep_more_than_balance_fails_gracefully() {
     let (env, program) = deploy().await;
@@ -1445,7 +1448,7 @@ async fn test_sweep_more_than_balance_fails_gracefully() {
     let prog_balance_before = program.balance();
     assert_eq!(prog_balance_before, EXISTENTIAL_DEPOSIT, "fresh deploy: program holds only ED");
 
-    // Admin tries to sweep 100 VARA when the program only has ED (1 VARA).
+    // Admin tries to sweep 100 VARA when protocol_balance == 0.
     let sweep_result = service_client
         .sweep(100 * ONE_VARA)
         .with_actor_id(ADMIN_ID.into())
@@ -1454,8 +1457,8 @@ async fn test_sweep_more_than_balance_fails_gracefully() {
 
     assert_eq!(
         sweep_result,
-        Err(aan_tv_client::Error::RefundFailed),
-        "sweeping more than program balance should return RefundFailed"
+        Err(aan_tv_client::Error::InsufficientFunds),
+        "sweeping above protocol_balance should return InsufficientFunds"
     );
 
     // Program balance must be unchanged.
@@ -1893,4 +1896,313 @@ async fn test_mark_covered_double_rejected() {
         Err(aan_tv_client::Error::AlreadyCovered),
         "second mark_covered must return AlreadyCovered"
     );
+}
+
+// ── New tests for Fixes 1 + 2 ─────────────────────────────────────────────────
+
+/// Fix 1: Admin tries sweep(1 VARA) on fresh deploy where protocol_balance == 0.
+/// Must return Err(InsufficientFunds). Program balance unchanged.
+#[tokio::test]
+async fn test_sweep_rejects_above_protocol_balance() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_before = program.balance();
+
+    // protocol_balance == 0 after fresh deploy.
+    let sweep_result = service_client
+        .sweep(ONE_VARA)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sweep_result,
+        Err(aan_tv_client::Error::InsufficientFunds),
+        "sweep(1 VARA) when protocol_balance==0 must return InsufficientFunds"
+    );
+
+    let prog_balance_after = program.balance();
+    assert_eq!(
+        prog_balance_before, prog_balance_after,
+        "program balance must be unchanged after failed sweep"
+    );
+}
+
+/// Fix 1: After a resolved match, protocol_balance == 0.2 VARA.
+/// Admin sweeps 0.2 VARA → Ok. Admin tries another 0.01 VARA → InsufficientFunds.
+#[tokio::test]
+async fn test_sweep_after_resolve_succeeds_up_to_protocol_cut() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    // Run a full match to completion (player_a wins).
+    let match_id = setup_revealed_match_a_wins(&mut service_client).await;
+    service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("resolve should succeed");
+
+    // protocol_balance is now PROTOCOL_CUT (0.2 VARA).
+    // Admin sweeps exactly that amount → should succeed.
+    let sweep_result = service_client
+        .sweep(PROTOCOL_CUT)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(sweep_result, Ok(()), "admin sweep of protocol_balance should succeed");
+
+    // protocol_balance is now 0. Another tiny sweep should fail.
+    let tiny = ONE_VARA / 100; // 0.01 VARA
+    let second_sweep = service_client
+        .sweep(tiny)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(
+        second_sweep,
+        Err(aan_tv_client::Error::InsufficientFunds),
+        "sweep after protocol_balance exhausted must return InsufficientFunds"
+    );
+}
+
+/// Fix 2 (InCommit abandonment, one committer): PLAYER_A commits, PLAYER_B never commits.
+/// After advancing past commit_deadline (200 blocks), resolve pays PLAYER_A 90%.
+/// Protocol retains 10%.
+#[tokio::test]
+async fn test_resolve_one_committer_after_commit_deadline_pays_committer() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_after_deploy = program.balance();
+
+    // Open + Accept → InCommit.
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // PLAYER_A commits; PLAYER_B does NOT commit.
+    let salt_a: [u8; 32] = [0xA1; 32];
+    let commitment_a = make_commitment(70, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    // Advance blocks past commit_deadline (200 blocks from accept).
+    // Current height after ~3 messages is ~3; commit_deadline is ~203.
+    let current_height = env.system().block_height();
+    env.system().run_to_block(current_height + 210);
+
+    // Resolve — PLAYER_A should win by default.
+    let prog_balance_before_resolve = program.balance();
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    let winner_actor = resolve_result.expect("resolve should succeed when one committer wins");
+    assert_eq!(
+        winner_actor,
+        ActorId::from(PLAYER_A_ID),
+        "PLAYER_A (only committer) should win by default"
+    );
+
+    // Program paid out WINNER_CUT (1.8 VARA) to PLAYER_A; retained PROTOCOL_CUT (0.2 VARA).
+    let prog_balance_after_resolve = program.balance();
+    assert_eq!(
+        prog_balance_before_resolve - prog_balance_after_resolve,
+        WINNER_CUT,
+        "program should have paid out exactly WINNER_CUT (1.8 VARA) to PLAYER_A"
+    );
+    assert_eq!(
+        prog_balance_after_resolve,
+        prog_balance_after_deploy + PROTOCOL_CUT,
+        "program should retain ED + PROTOCOL_CUT after one-committer resolve"
+    );
+
+    // Match state.
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.state, MatchState::Resolved, "match must be Resolved");
+    assert_eq!(m.winner, Some(ActorId::from(PLAYER_A_ID)), "winner must be PLAYER_A");
+}
+
+/// Fix 2 (InCommit abandonment, neither commits): Both players fail to commit before
+/// commit_deadline. Resolve refunds both 1 VARA each and returns Err(MatchAbandoned).
+#[tokio::test]
+async fn test_resolve_neither_committed_after_deadline_refunds_both() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_after_deploy = program.balance();
+
+    // Open + Accept → InCommit (neither player commits).
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    // Neither player commits. Advance past commit_deadline.
+    let current_height = env.system().block_height();
+    env.system().run_to_block(current_height + 210);
+
+    // Program holds ED + 2 VARA before resolve.
+    let prog_balance_before_resolve = program.balance();
+    assert_eq!(
+        prog_balance_before_resolve,
+        prog_balance_after_deploy + TWO_VARA,
+        "program should hold ED + 2 VARA before resolve"
+    );
+
+    // Resolve — should refund both, return Err(MatchAbandoned).
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolve_result,
+        Err(aan_tv_client::Error::MatchAbandoned),
+        "resolve with neither committed after deadline must return MatchAbandoned"
+    );
+
+    // Program balance should be back to deploy level (both buy-ins refunded, no protocol cut).
+    let prog_balance_after_resolve = program.balance();
+    assert_eq!(
+        prog_balance_after_resolve, prog_balance_after_deploy,
+        "program balance should return to deploy level after bilateral refund (no protocol cut taken)"
+    );
+
+    // Match is Resolved with no winner.
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.state, MatchState::Resolved, "match must be Resolved");
+    assert_eq!(m.winner, None, "winner must be None on abandoned match");
+}
+
+/// Fix 2 (InReveal abandonment, neither reveals): Both players commit but neither reveals
+/// before reveal_deadline. Resolve refunds both and returns Err(MatchAbandoned).
+#[tokio::test]
+async fn test_resolve_neither_revealed_after_deadline_refunds_both() {
+    let (env, program) = deploy().await;
+    let mut service_client = program.aan_tv();
+
+    let prog_balance_after_deploy = program.balance();
+
+    // Open + Accept + Commit both → InReveal.
+    let match_id = service_client
+        .open_match()
+        .with_actor_id(PLAYER_A_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("open_match should succeed");
+
+    service_client
+        .accept_match(match_id)
+        .with_actor_id(PLAYER_B_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap()
+        .expect("accept_match should succeed");
+
+    let salt_a: [u8; 32] = [0xA1; 32];
+    let commitment_a = make_commitment(70, &salt_a);
+    service_client
+        .commit(match_id, commitment_a)
+        .with_actor_id(PLAYER_A_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_A commit should succeed");
+
+    let salt_b: [u8; 32] = [0xB1; 32];
+    let commitment_b = make_commitment(30, &salt_b);
+    service_client
+        .commit(match_id, commitment_b)
+        .with_actor_id(PLAYER_B_ID.into())
+        .await
+        .unwrap()
+        .expect("PLAYER_B commit should succeed");
+
+    // Both committed → state is now InReveal. Neither reveals.
+    // Advance past reveal_deadline (commit_deadline + 200; commit_deadline was accept_block + 200).
+    // Total: ~400 + current from accept. Safe to add 420.
+    let current_height = env.system().block_height();
+    env.system().run_to_block(current_height + 420);
+
+    // Program holds ED + 2 VARA before resolve.
+    let prog_balance_before_resolve = program.balance();
+    assert_eq!(
+        prog_balance_before_resolve,
+        prog_balance_after_deploy + TWO_VARA,
+        "program should hold ED + 2 VARA before resolve"
+    );
+
+    // Resolve — should refund both, return Err(MatchAbandoned).
+    let resolve_result = service_client
+        .resolve(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolve_result,
+        Err(aan_tv_client::Error::MatchAbandoned),
+        "resolve with neither revealed after deadline must return MatchAbandoned"
+    );
+
+    // Program balance should be back to deploy level (both buy-ins refunded, no protocol cut).
+    let prog_balance_after_resolve = program.balance();
+    assert_eq!(
+        prog_balance_after_resolve, prog_balance_after_deploy,
+        "program balance should return to deploy level after bilateral refund (no protocol cut taken)"
+    );
+
+    // Match is Resolved with no winner.
+    let m = service_client
+        .get_match(match_id)
+        .with_actor_id(PLAYER_C_ID.into())
+        .await
+        .unwrap()
+        .expect("match should exist");
+    assert_eq!(m.state, MatchState::Resolved, "match must be Resolved");
+    assert_eq!(m.winner, None, "winner must be None on abandoned match");
 }
