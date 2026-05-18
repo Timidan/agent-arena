@@ -43,3 +43,5 @@ sails-rs = "0.10.4"
 tokio = "1.48.0"
 aan-tv-app = { version = "0.1.0", path = "app" }
 aan-tv-client = { version = "0.1.0", path = "client" }
+parity-scale-codec = { version = "=3.7.5", default-features = false, features = ["derive"] }
+scale-info = { version = "2.11", default-features = false, features = ["derive"] }

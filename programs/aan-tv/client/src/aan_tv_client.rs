@@ -35,6 +35,7 @@ pub mod aan_tv {
     use super::*;
     pub trait AanTv {
         type Env: sails_rs::client::GearEnv;
+        /// Placeholder kept until Task 8 replaces this with real methods.
         fn do_something(&mut self) -> sails_rs::client::PendingCall<io::DoSomething, Self::Env>;
     }
     pub struct AanTvImpl;

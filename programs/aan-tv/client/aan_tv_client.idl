@@ -3,6 +3,7 @@ constructor {
 };
 
 service AanTv {
+  /// Placeholder kept until Task 8 replaces this with real methods.
   DoSomething : () -> str;
 };
 
