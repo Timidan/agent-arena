@@ -2,8 +2,12 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-use sails_rs::prelude::*;
+use alloc::{collections::BTreeMap, rc::Rc, string::String};
+use core::cell::RefCell;
+use sails_rs::{
+    gstd::{msg, CommandReply},
+    prelude::*,
+};
 
 // ── Type aliases ────────────────────────────────────────────────────────────
 pub type MatchId = u64;
@@ -97,40 +101,117 @@ pub enum Error {
     InvalidArg,
     // Arithmetic safety
     ArithmeticOverflow,
-    // Payout failure (msg::send back to winner/refund target failed)
+    // Payout failure
     RefundFailed,
 }
 
-// ── Service struct ───────────────────────────────────────────────────────────
-struct AanTv(());
+// ── Service state (shared via Rc<RefCell<>>) ─────────────────────────────────
+pub struct AanTvState {
+    pub admin: ActorId,
+    pub buy_in: u128,         // 1 VARA = 1_000_000_000_000 plancks
+    pub protocol_bps: u16,    // 1000 = 10%
+    pub coverage_fee: u128,   // 0.1 VARA = 100_000_000_000 plancks
+    pub next_match_id: MatchId,
+    pub next_coverage_id: CoverageId,
+    pub matches: BTreeMap<MatchId, Match>,
+    pub coverage_queue: BTreeMap<CoverageId, CoverageRequest>,
+}
 
-impl AanTv {
-    pub fn create() -> Self {
-        Self(())
+impl AanTvState {
+    pub fn new(admin: ActorId) -> Self {
+        Self {
+            admin,
+            buy_in: 1_000_000_000_000,
+            protocol_bps: 1000,
+            coverage_fee: 100_000_000_000,
+            next_match_id: 1,
+            next_coverage_id: 1,
+            matches: BTreeMap::new(),
+            coverage_queue: BTreeMap::new(),
+        }
     }
+}
+
+// ── Service struct (holds Rc to shared state) ────────────────────────────────
+pub struct AanTv {
+    state: Rc<RefCell<AanTvState>>,
 }
 
 #[sails_rs::service]
 impl AanTv {
-    /// Placeholder kept until Task 8 replaces this with real methods.
+    /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
+    ///
+    /// Refund correctness (sails-rs 0.10.x):
+    ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+    ///   - Underpayment / any Err: full `value` returned via
+    ///     `CommandReply::with_value(value)`.
+    ///   DO NOT use `msg::send` for refunds — on Err paths in sails-rs 0.10,
+    ///   outbound sends are NOT executed. `CommandReply::with_value` is the
+    ///   only reliable refund primitive.
     #[export]
-    pub fn do_something(&mut self) -> String {
-        "Hello from AanTv!".to_string()
+    pub fn open_match(&mut self) -> CommandReply<Result<MatchId, Error>> {
+        let value = msg::value();
+        let mut state = self.state.borrow_mut();
+        let buy_in = state.buy_in;
+
+        // Underpayment guard: full refund via reply.
+        if value < buy_in {
+            return CommandReply::new(Err(Error::InsufficientPayment)).with_value(value);
+        }
+
+        let excess = value - buy_in;
+
+        // Overflow-safe match ID allocation.
+        let next = match state.next_match_id.checked_add(1) {
+            Some(n) => n,
+            None => {
+                return CommandReply::new(Err(Error::ArithmeticOverflow)).with_value(value);
+            }
+        };
+
+        let match_id = state.next_match_id;
+        state.next_match_id = next;
+
+        let new_match = Match {
+            id: match_id,
+            player_a: msg::source(),
+            player_b: None,
+            commit_a: None,
+            commit_b: None,
+            reveal_a: None,
+            reveal_b: None,
+            winner: None,
+            pot: buy_in,
+            commit_deadline_block: 0, // set on AcceptMatch
+            reveal_deadline_block: 0, // set on AcceptMatch
+            state: MatchState::Open,
+        };
+
+        state.matches.insert(match_id, new_match);
+
+        // Refund excess (with_value(0) is a no-op for exact payment).
+        CommandReply::new(Ok(match_id)).with_value(excess)
     }
 }
 
 // ── Program ──────────────────────────────────────────────────────────────────
-#[derive(Default)]
-pub struct Program(());
+pub struct Program {
+    state: Rc<RefCell<AanTvState>>,
+}
 
 #[sails_rs::program]
 impl Program {
+    /// Initialise the program. `msg::source()` becomes admin.
     pub fn create() -> Self {
-        Self(())
+        let state = Rc::new(RefCell::new(AanTvState::new(msg::source())));
+        Self { state }
     }
 
+    /// Service accessor. Returns a fresh AanTv view sharing program state.
     pub fn aan_tv(&self) -> AanTv {
-        AanTv::create()
+        AanTv {
+            state: self.state.clone(),
+        }
     }
 }
 
@@ -182,5 +263,19 @@ mod tests {
         round_trip(CoverageKind::LaunchedApp);
         round_trip(CoverageKind::MatchSettled);
         round_trip(CoverageKind::Custom);
+    }
+
+    #[test]
+    fn aan_tv_state_init_has_correct_defaults() {
+        let admin = ActorId::from([1u8; 32]);
+        let state = AanTvState::new(admin);
+        assert_eq!(state.admin, admin);
+        assert_eq!(state.buy_in, 1_000_000_000_000);
+        assert_eq!(state.protocol_bps, 1000);
+        assert_eq!(state.coverage_fee, 100_000_000_000);
+        assert_eq!(state.next_match_id, 1);
+        assert_eq!(state.next_coverage_id, 1);
+        assert!(state.matches.is_empty());
+        assert!(state.coverage_queue.is_empty());
     }
 }

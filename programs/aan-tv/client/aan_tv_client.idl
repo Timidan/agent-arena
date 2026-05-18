@@ -1,9 +1,35 @@
+type Error = enum {
+  Unauthorized,
+  InsufficientPayment,
+  MatchNotFound,
+  WrongPhase,
+  DuplicateCommit,
+  RevealMismatch,
+  DeadlinePassed,
+  DeadlineNotReached,
+  CoverageNotFound,
+  AlreadyCovered,
+  SelfCover,
+  InvalidArg,
+  ArithmeticOverflow,
+  RefundFailed,
+};
+
 constructor {
+  /// Initialise the program. `msg::source()` becomes admin.
   Create : ();
 };
 
 service AanTv {
-  /// Placeholder kept until Task 8 replaces this with real methods.
-  DoSomething : () -> str;
+  /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  ///   - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+  ///   - Underpayment / any Err: full `value` returned via
+  ///     `CommandReply::with_value(value)`.
+  ///   DO NOT use `msg::send` for refunds — on Err paths in sails-rs 0.10,
+  ///   outbound sends are NOT executed. `CommandReply::with_value` is the
+  ///   only reliable refund primitive.
+  OpenMatch : () -> result (u64, Error);
 };
 

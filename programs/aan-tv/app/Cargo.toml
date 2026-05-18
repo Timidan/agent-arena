@@ -11,6 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-sails-rs.workspace = true
+sails-rs = { workspace = true, features = ["gstd"] }
 parity-scale-codec.workspace = true
 scale-info.workspace = true

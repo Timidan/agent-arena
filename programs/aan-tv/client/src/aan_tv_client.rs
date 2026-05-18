@@ -15,6 +15,7 @@ impl<E: sails_rs::client::GearEnv> AanTvClient for sails_rs::client::Actor<AanTv
 }
 pub trait AanTvClientCtors {
     type Env: sails_rs::client::GearEnv;
+    /// Initialise the program. `msg::source()` becomes admin.
     fn create(self) -> sails_rs::client::PendingCtor<AanTvClientProgram, io::Create, Self::Env>;
 }
 impl<E: sails_rs::client::GearEnv> AanTvClientCtors
@@ -35,19 +36,46 @@ pub mod aan_tv {
     use super::*;
     pub trait AanTv {
         type Env: sails_rs::client::GearEnv;
-        /// Placeholder kept until Task 8 replaces this with real methods.
-        fn do_something(&mut self) -> sails_rs::client::PendingCall<io::DoSomething, Self::Env>;
+        /// Open a new 1v1 dice match. Caller must attach at least `buy_in` VARA.
+        ///
+        /// Refund correctness (sails-rs 0.10.x):
+        /// - Overpayment: excess returned via `CommandReply::with_value(excess)`.
+        /// - Underpayment / any Err: full `value` returned via
+        /// `CommandReply::with_value(value)`.
+        /// DO NOT use `msg::send` for refunds — on Err paths in sails-rs 0.10,
+        /// outbound sends are NOT executed. `CommandReply::with_value` is the
+        /// only reliable refund primitive.
+        fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env>;
     }
     pub struct AanTvImpl;
     impl<E: sails_rs::client::GearEnv> AanTv for sails_rs::client::Service<AanTvImpl, E> {
         type Env = E;
-        fn do_something(&mut self) -> sails_rs::client::PendingCall<io::DoSomething, Self::Env> {
+        fn open_match(&mut self) -> sails_rs::client::PendingCall<io::OpenMatch, Self::Env> {
             self.pending_call(())
         }
     }
 
     pub mod io {
         use super::*;
-        sails_rs::io_struct_impl!(DoSomething () -> String);
+        sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
     }
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum Error {
+    Unauthorized,
+    InsufficientPayment,
+    MatchNotFound,
+    WrongPhase,
+    DuplicateCommit,
+    RevealMismatch,
+    DeadlinePassed,
+    DeadlineNotReached,
+    CoverageNotFound,
+    AlreadyCovered,
+    SelfCover,
+    InvalidArg,
+    ArithmeticOverflow,
+    RefundFailed,
 }
