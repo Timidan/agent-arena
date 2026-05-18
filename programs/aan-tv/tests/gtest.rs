@@ -1,4 +1,4 @@
-use aan_tv_client::{AanTvClient, AanTvClientCtors, Match, MatchState, CoverageRequest, CoverageKind, aan_tv::*};
+use aan_tv_client::{AanTvClient, AanTvClientCtors, Match, MatchState, MatchOutcome, CoverageRequest, CoverageKind, aan_tv::*};
 use sails_rs::{client::*, gtest::*, prelude::ActorId};
 use sha2::{Digest, Sha256};
 
@@ -1012,11 +1012,24 @@ async fn test_resolve_pays_winner_90_pct_and_protocol_10_pct() {
         .await
         .unwrap();
 
-    let winner_actor: ActorId = resolve_result.expect("resolve should succeed");
     assert_eq!(
-        winner_actor,
-        ActorId::from(PLAYER_A_ID),
-        "winner must be PLAYER_A"
+        resolve_result,
+        Ok(MatchOutcome::Winner(ActorId::from(PLAYER_A_ID))),
+        "resolve must return Ok(MatchOutcome::Winner(PLAYER_A))"
+    );
+
+    // Strengthen: verify PLAYER_A's wallet actually received the winner cut.
+    // In gtest, msg::send_bytes_with_gas lands in the mailbox and balance_of
+    // accounts for it after processing. Check the balance increased by WINNER_CUT.
+    let player_a_balance = env.system().balance_of(PLAYER_A_ID);
+    // PLAYER_A started with MINT_AMOUNT (100 VARA), paid ONE_VARA buy-in, received WINNER_CUT (1.8 VARA).
+    // Net: MINT_AMOUNT - ONE_VARA + WINNER_CUT = 100.8 VARA (minus gas costs).
+    // We verify the balance is greater than MINT_AMOUNT - ONE_VARA (i.e., the refund landed).
+    assert!(
+        player_a_balance > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_A balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after winning payout",
+        player_a_balance,
+        MINT_AMOUNT - ONE_VARA
     );
 
     // Program must have sent 1.8 VARA to winner — program balance drops by WINNER_CUT.
@@ -1113,11 +1126,10 @@ async fn test_resolve_tie_goes_to_player_a() {
         .await
         .unwrap();
 
-    let winner_actor = resolve_result.expect("resolve should succeed on tie");
     assert_eq!(
-        winner_actor,
-        ActorId::from(PLAYER_A_ID),
-        "tie must go to player_a per spec"
+        resolve_result,
+        Ok(MatchOutcome::Winner(ActorId::from(PLAYER_A_ID))),
+        "tie must go to player_a per spec — Ok(MatchOutcome::Winner(PLAYER_A))"
     );
 
     let m = service_client
@@ -1153,10 +1165,9 @@ async fn test_resolve_player_b_wins_when_higher() {
         .await
         .unwrap();
 
-    let winner_actor = resolve_result.expect("resolve should succeed");
     assert_eq!(
-        winner_actor,
-        ActorId::from(PLAYER_B_ID),
+        resolve_result,
+        Ok(MatchOutcome::Winner(ActorId::from(PLAYER_B_ID))),
         "PLAYER_B (80 mod 100) beats PLAYER_A (20 mod 100)"
     );
 
@@ -1170,6 +1181,15 @@ async fn test_resolve_player_b_wins_when_higher() {
         prog_balance_after,
         EXISTENTIAL_DEPOSIT + PROTOCOL_CUT,
         "protocol cut (0.2 VARA) retained in program"
+    );
+
+    // Strengthen: verify PLAYER_B's wallet actually received the winner cut.
+    let player_b_balance = env.system().balance_of(PLAYER_B_ID);
+    assert!(
+        player_b_balance > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_B balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after winning payout",
+        player_b_balance,
+        MINT_AMOUNT - ONE_VARA
     );
 
     let m = service_client
@@ -1191,13 +1211,16 @@ async fn test_resolve_idempotent_second_call_rejected() {
 
     let match_id = setup_revealed_match_a_wins(&mut service_client).await;
 
-    // First resolve: should succeed.
+    // First resolve: should succeed with a winner outcome.
     let first_result = service_client
         .resolve(match_id)
         .with_actor_id(PLAYER_C_ID.into())
         .await
         .unwrap();
-    assert!(first_result.is_ok(), "first resolve should succeed");
+    assert!(
+        matches!(first_result, Ok(MatchOutcome::Winner(_))),
+        "first resolve should return Ok(MatchOutcome::Winner(...))"
+    );
 
     let prog_balance_after_first = program.balance();
 
@@ -2018,11 +2041,10 @@ async fn test_resolve_one_committer_after_commit_deadline_pays_committer() {
         .await
         .unwrap();
 
-    let winner_actor = resolve_result.expect("resolve should succeed when one committer wins");
     assert_eq!(
-        winner_actor,
-        ActorId::from(PLAYER_A_ID),
-        "PLAYER_A (only committer) should win by default"
+        resolve_result,
+        Ok(MatchOutcome::Winner(ActorId::from(PLAYER_A_ID))),
+        "PLAYER_A (only committer) should win by default — Ok(MatchOutcome::Winner(PLAYER_A))"
     );
 
     // Program paid out WINNER_CUT (1.8 VARA) to PLAYER_A; retained PROTOCOL_CUT (0.2 VARA).
@@ -2087,7 +2109,9 @@ async fn test_resolve_neither_committed_after_deadline_refunds_both() {
         "program should hold ED + 2 VARA before resolve"
     );
 
-    // Resolve — should refund both, return Err(MatchAbandoned).
+    // Resolve — should refund both and return Ok(MatchOutcome::Abandoned).
+    // CRITICAL: must be Ok (not Err) so that the queued msg::send_bytes_with_gas
+    // refund calls actually fire on mainnet.
     let resolve_result = service_client
         .resolve(match_id)
         .with_actor_id(PLAYER_C_ID.into())
@@ -2096,8 +2120,8 @@ async fn test_resolve_neither_committed_after_deadline_refunds_both() {
 
     assert_eq!(
         resolve_result,
-        Err(aan_tv_client::Error::MatchAbandoned),
-        "resolve with neither committed after deadline must return MatchAbandoned"
+        Ok(MatchOutcome::Abandoned),
+        "resolve with neither committed after deadline must return Ok(MatchOutcome::Abandoned)"
     );
 
     // Program balance should be back to deploy level (both buy-ins refunded, no protocol cut).
@@ -2105,6 +2129,24 @@ async fn test_resolve_neither_committed_after_deadline_refunds_both() {
     assert_eq!(
         prog_balance_after_resolve, prog_balance_after_deploy,
         "program balance should return to deploy level after bilateral refund (no protocol cut taken)"
+    );
+
+    // Strengthen: verify PLAYER_A actually received their refund (1 VARA).
+    let player_a_balance_after = env.system().balance_of(PLAYER_A_ID);
+    assert!(
+        player_a_balance_after > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_A balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after refund",
+        player_a_balance_after,
+        MINT_AMOUNT - ONE_VARA
+    );
+
+    // Strengthen: verify PLAYER_B actually received their refund (1 VARA).
+    let player_b_balance_after = env.system().balance_of(PLAYER_B_ID);
+    assert!(
+        player_b_balance_after > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_B balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after refund",
+        player_b_balance_after,
+        MINT_AMOUNT - ONE_VARA
     );
 
     // Match is Resolved with no winner.
@@ -2119,7 +2161,7 @@ async fn test_resolve_neither_committed_after_deadline_refunds_both() {
 }
 
 /// Fix 2 (InReveal abandonment, neither reveals): Both players commit but neither reveals
-/// before reveal_deadline. Resolve refunds both and returns Err(MatchAbandoned).
+/// before reveal_deadline. Resolve refunds both and returns Ok(MatchOutcome::Abandoned).
 #[tokio::test]
 async fn test_resolve_neither_revealed_after_deadline_refunds_both() {
     let (env, program) = deploy().await;
@@ -2176,7 +2218,9 @@ async fn test_resolve_neither_revealed_after_deadline_refunds_both() {
         "program should hold ED + 2 VARA before resolve"
     );
 
-    // Resolve — should refund both, return Err(MatchAbandoned).
+    // Resolve — should refund both and return Ok(MatchOutcome::Abandoned).
+    // CRITICAL: must be Ok (not Err) so that the queued msg::send_bytes_with_gas
+    // refund calls actually fire on mainnet.
     let resolve_result = service_client
         .resolve(match_id)
         .with_actor_id(PLAYER_C_ID.into())
@@ -2185,8 +2229,8 @@ async fn test_resolve_neither_revealed_after_deadline_refunds_both() {
 
     assert_eq!(
         resolve_result,
-        Err(aan_tv_client::Error::MatchAbandoned),
-        "resolve with neither revealed after deadline must return MatchAbandoned"
+        Ok(MatchOutcome::Abandoned),
+        "resolve with neither revealed after deadline must return Ok(MatchOutcome::Abandoned)"
     );
 
     // Program balance should be back to deploy level (both buy-ins refunded, no protocol cut).
@@ -2194,6 +2238,24 @@ async fn test_resolve_neither_revealed_after_deadline_refunds_both() {
     assert_eq!(
         prog_balance_after_resolve, prog_balance_after_deploy,
         "program balance should return to deploy level after bilateral refund (no protocol cut taken)"
+    );
+
+    // Strengthen: verify PLAYER_A actually received their refund (1 VARA).
+    let player_a_balance_after = env.system().balance_of(PLAYER_A_ID);
+    assert!(
+        player_a_balance_after > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_A balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after refund",
+        player_a_balance_after,
+        MINT_AMOUNT - ONE_VARA
+    );
+
+    // Strengthen: verify PLAYER_B actually received their refund (1 VARA).
+    let player_b_balance_after = env.system().balance_of(PLAYER_B_ID);
+    assert!(
+        player_b_balance_after > MINT_AMOUNT - ONE_VARA,
+        "PLAYER_B balance ({}) must exceed MINT_AMOUNT - ONE_VARA ({}) after refund",
+        player_b_balance_after,
+        MINT_AMOUNT - ONE_VARA
     );
 
     // Match is Resolved with no winner.

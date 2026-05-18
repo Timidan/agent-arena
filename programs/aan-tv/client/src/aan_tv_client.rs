@@ -99,15 +99,19 @@ pub mod aan_tv {
         ///
         /// state == InCommit:
         /// block <= commit_deadline → Err(DeadlineNotReached)
-        /// block >  commit_deadline, one committed → committer wins, 90% payout
-        /// block >  commit_deadline, neither committed → refund both, Err(MatchAbandoned)
+        /// block >  commit_deadline, one committed → committer wins, Ok(MatchOutcome::Winner)
+        /// block >  commit_deadline, neither committed → refund both, Ok(MatchOutcome::Abandoned)
         ///
         /// state == InReveal:
-        /// Both revealed → winner = higher mod-100 (ties go to player_a), payout
+        /// Both revealed → winner = higher mod-100 (ties go to player_a), Ok(MatchOutcome::Winner)
         /// One revealed, deadline not passed → Err(DeadlineNotReached)
-        /// One revealed, deadline passed → revealer wins, payout
+        /// One revealed, deadline passed → revealer wins, Ok(MatchOutcome::Winner)
         /// Neither revealed, deadline not passed → Err(DeadlineNotReached)
-        /// Neither revealed, deadline passed → refund both, Err(MatchAbandoned)
+        /// Neither revealed, deadline passed → refund both, Ok(MatchOutcome::Abandoned)
+        ///
+        /// IMPORTANT: abandonment paths return Ok(MatchOutcome::Abandoned) — NOT Err — so that
+        /// queued msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails semantics,
+        /// outbound sends only execute when the service method returns Ok.
         fn resolve(
             &mut self,
             match_id: u64,
@@ -222,7 +226,7 @@ pub mod aan_tv {
         sails_rs::io_struct_impl!(MarkCovered (coverage_id: u64, chat_msg_id: u64) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(OpenMatch () -> Result<u64, super::Error>);
         sails_rs::io_struct_impl!(RequestCoverage (event_kind: super::CoverageKind, target_program: Option<ActorId>, hint: String) -> Result<u64, super::Error>);
-        sails_rs::io_struct_impl!(Resolve (match_id: u64) -> Result<ActorId, super::Error>);
+        sails_rs::io_struct_impl!(Resolve (match_id: u64) -> Result<super::MatchOutcome, super::Error>);
         sails_rs::io_struct_impl!(Reveal (match_id: u64, move_value: u8, salt: [u8; 32]) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(Sweep (amount: u128) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(GetCoverageQueue (cursor: Option<u64>, limit: u32) -> super::CoverageQueuePage);
@@ -242,7 +246,6 @@ pub enum Error {
     RevealMismatch,
     DeadlinePassed,
     DeadlineNotReached,
-    MatchAbandoned,
     CoverageNotFound,
     AlreadyCovered,
     SelfCover,
@@ -259,6 +262,15 @@ pub enum CoverageKind {
     LaunchedApp,
     MatchSettled,
     Custom,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum MatchOutcome {
+    /// A player won; winner_cut was paid to them.
+    Winner(ActorId),
+    /// No winner; both players were refunded their buy-in.
+    Abandoned,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]

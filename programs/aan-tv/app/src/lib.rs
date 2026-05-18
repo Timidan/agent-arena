@@ -104,7 +104,6 @@ pub enum Error {
     RevealMismatch,
     DeadlinePassed,
     DeadlineNotReached,
-    MatchAbandoned,      // resolve returned after refunding both players (no winner)
     // Coverage errors
     CoverageNotFound,
     AlreadyCovered,
@@ -115,6 +114,17 @@ pub enum Error {
     ArithmeticOverflow,
     // Payout failure
     RefundFailed,
+}
+
+// ── MatchOutcome ──────────────────────────────────────────────────────────────
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum MatchOutcome {
+    /// A player won; winner_cut was paid to them.
+    Winner(ActorId),
+    /// No winner; both players were refunded their buy-in.
+    Abandoned,
 }
 
 // ── Service state (shared via Rc<RefCell<>>) ─────────────────────────────────
@@ -376,17 +386,21 @@ impl AanTv {
     ///
     ///  state == InCommit:
     ///    block <= commit_deadline → Err(DeadlineNotReached)
-    ///    block >  commit_deadline, one committed → committer wins, 90% payout
-    ///    block >  commit_deadline, neither committed → refund both, Err(MatchAbandoned)
+    ///    block >  commit_deadline, one committed → committer wins, Ok(MatchOutcome::Winner)
+    ///    block >  commit_deadline, neither committed → refund both, Ok(MatchOutcome::Abandoned)
     ///
     ///  state == InReveal:
-    ///    Both revealed → winner = higher mod-100 (ties go to player_a), payout
+    ///    Both revealed → winner = higher mod-100 (ties go to player_a), Ok(MatchOutcome::Winner)
     ///    One revealed, deadline not passed → Err(DeadlineNotReached)
-    ///    One revealed, deadline passed → revealer wins, payout
+    ///    One revealed, deadline passed → revealer wins, Ok(MatchOutcome::Winner)
     ///    Neither revealed, deadline not passed → Err(DeadlineNotReached)
-    ///    Neither revealed, deadline passed → refund both, Err(MatchAbandoned)
+    ///    Neither revealed, deadline passed → refund both, Ok(MatchOutcome::Abandoned)
+    ///
+    /// IMPORTANT: abandonment paths return Ok(MatchOutcome::Abandoned) — NOT Err — so that
+    /// queued msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails semantics,
+    /// outbound sends only execute when the service method returns Ok.
     #[export]
-    pub fn resolve(&mut self, match_id: MatchId) -> Result<ActorId, Error> {
+    pub fn resolve(&mut self, match_id: MatchId) -> Result<MatchOutcome, Error> {
         let mut state = self.state.borrow_mut();
 
         let m = match state.matches.get_mut(&match_id) {
@@ -440,7 +454,7 @@ impl AanTv {
                     let m = state.matches.get_mut(&match_id).expect("checked above");
                     m.winner = Some(player_a);
                     m.state = MatchState::Resolved;
-                    return Ok(player_a);
+                    return Ok(MatchOutcome::Winner(player_a));
                 }
                 (false, true) => {
                     // player_b committed, player_a didn't → player_b wins by default.
@@ -462,14 +476,16 @@ impl AanTv {
                     let m = state.matches.get_mut(&match_id).expect("checked above");
                     m.winner = Some(player_b);
                     m.state = MatchState::Resolved;
-                    return Ok(player_b);
+                    return Ok(MatchOutcome::Winner(player_b));
                 }
                 (false, false) | (true, true) => {
                     // Neither committed (or both — impossible to reach InCommit with both since
                     // both-commit auto-advances to InReveal, so (true,true) can't happen here).
                     // Refund both players their buy_in halves.
-                    // Per pricing.md: queued sends only fire on Ok return. If either send
-                    // call returns Err, we return Err and neither send fires.
+                    //
+                    // CRITICAL: return Ok(MatchOutcome::Abandoned), NOT Err, so that queued
+                    // msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails
+                    // semantics, outbound sends only execute when the method returns Ok.
                     let refund_each = m.pot / 2;
                     msg::send_bytes_with_gas(player_a, sails_rs::Vec::new(), 0, refund_each)
                         .map_err(|_| Error::RefundFailed)?;
@@ -481,7 +497,7 @@ impl AanTv {
                     m.state = MatchState::Resolved;
                     m.winner = None;
                     // protocol_balance unchanged — no cut taken on abandoned match.
-                    return Err(Error::MatchAbandoned);
+                    return Ok(MatchOutcome::Abandoned);
                 }
             }
         }
@@ -515,6 +531,10 @@ impl AanTv {
                     return Err(Error::DeadlineNotReached);
                 }
                 // Deadline passed — refund both, mutate to Resolved.
+                //
+                // CRITICAL: return Ok(MatchOutcome::Abandoned), NOT Err, so that queued
+                // msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails
+                // semantics, outbound sends only execute when the method returns Ok.
                 let refund_each = m.pot / 2;
                 msg::send_bytes_with_gas(player_a, sails_rs::Vec::new(), 0, refund_each)
                     .map_err(|_| Error::RefundFailed)?;
@@ -524,7 +544,7 @@ impl AanTv {
                 let m = state.matches.get_mut(&match_id).expect("checked above");
                 m.state = MatchState::Resolved;
                 m.winner = None;
-                return Err(Error::MatchAbandoned);
+                return Ok(MatchOutcome::Abandoned);
             }
         };
 
@@ -556,7 +576,7 @@ impl AanTv {
             m.state = MatchState::Resolved;
         }
 
-        Ok(winner)
+        Ok(MatchOutcome::Winner(winner))
     }
 
     /// Pull accumulated protocol fees to admin wallet.
@@ -774,13 +794,18 @@ mod tests {
         round_trip(Error::RevealMismatch);
         round_trip(Error::DeadlinePassed);
         round_trip(Error::DeadlineNotReached);
-        round_trip(Error::MatchAbandoned);
         round_trip(Error::CoverageNotFound);
         round_trip(Error::AlreadyCovered);
         round_trip(Error::SelfCover);
         round_trip(Error::InvalidArg);
         round_trip(Error::ArithmeticOverflow);
         round_trip(Error::RefundFailed);
+    }
+
+    #[test]
+    fn match_outcome_round_trips_all_variants() {
+        round_trip(MatchOutcome::Winner(ActorId::from([2u8; 32])));
+        round_trip(MatchOutcome::Abandoned);
     }
 
     #[test]

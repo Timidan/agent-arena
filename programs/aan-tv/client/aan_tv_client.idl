@@ -8,7 +8,6 @@ type Error = enum {
   RevealMismatch,
   DeadlinePassed,
   DeadlineNotReached,
-  MatchAbandoned,
   CoverageNotFound,
   AlreadyCovered,
   SelfCover,
@@ -23,6 +22,13 @@ type CoverageKind = enum {
   LaunchedApp,
   MatchSettled,
   Custom,
+};
+
+type MatchOutcome = enum {
+  /// A player won; winner_cut was paid to them.
+  Winner: actor_id,
+  /// No winner; both players were refunded their buy-in.
+  Abandoned,
 };
 
 type CoverageQueuePage = struct {
@@ -116,16 +122,20 @@ service AanTv {
   /// 
   ///  state == InCommit:
   ///    block <= commit_deadline → Err(DeadlineNotReached)
-  ///    block >  commit_deadline, one committed → committer wins, 90% payout
-  ///    block >  commit_deadline, neither committed → refund both, Err(MatchAbandoned)
+  ///    block >  commit_deadline, one committed → committer wins, Ok(MatchOutcome::Winner)
+  ///    block >  commit_deadline, neither committed → refund both, Ok(MatchOutcome::Abandoned)
   /// 
   ///  state == InReveal:
-  ///    Both revealed → winner = higher mod-100 (ties go to player_a), payout
+  ///    Both revealed → winner = higher mod-100 (ties go to player_a), Ok(MatchOutcome::Winner)
   ///    One revealed, deadline not passed → Err(DeadlineNotReached)
-  ///    One revealed, deadline passed → revealer wins, payout
+  ///    One revealed, deadline passed → revealer wins, Ok(MatchOutcome::Winner)
   ///    Neither revealed, deadline not passed → Err(DeadlineNotReached)
-  ///    Neither revealed, deadline passed → refund both, Err(MatchAbandoned)
-  Resolve : (match_id: u64) -> result (actor_id, Error);
+  ///    Neither revealed, deadline passed → refund both, Ok(MatchOutcome::Abandoned)
+  /// 
+  /// IMPORTANT: abandonment paths return Ok(MatchOutcome::Abandoned) — NOT Err — so that
+  /// queued msg::send_bytes_with_gas refund calls actually fire. Per Gear/Sails semantics,
+  /// outbound sends only execute when the service method returns Ok.
+  Resolve : (match_id: u64) -> result (MatchOutcome, Error);
   /// Reveal the preimage (`move_value`, `salt`) behind a prior commitment. Free — no msg::value.
   /// 
   /// The contract verifies `SHA-256(move_value || salt) == stored_commitment`.
