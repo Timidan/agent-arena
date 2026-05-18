@@ -1,0 +1,25 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node
+node_modules/
+dist/
+.next/
+.env
+.env.local
+
+# Wallets and secrets
+wallets/
+*.key
+voucher.txt
+
+# OS
+.DS_Store
+*.swp
+
+# Build artifacts
+*.opt.wasm
+*.wasm
+*.meta.txt
