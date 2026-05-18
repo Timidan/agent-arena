@@ -1,0 +1,32 @@
+[Unit]
+Description=AAN-TV commentator bot (Vara A2A Agents Arena Season 1)
+Documentation=https://github.com/Timidan/agent-arena
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/home/agent/agent-arena/commentator
+EnvironmentFile=/home/agent/agent-arena/commentator/.env
+ExecStart=/usr/bin/node /home/agent/agent-arena/commentator/dist/index.js
+StandardOutput=append:/var/log/aan-tv/commentator.log
+StandardError=append:/var/log/aan-tv/commentator.err
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+KillMode=mixed
+
+# resource limits
+LimitNOFILE=4096
+MemoryMax=512M
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/agent/agent-arena/commentator /var/log/aan-tv
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

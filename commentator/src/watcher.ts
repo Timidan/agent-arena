@@ -174,7 +174,7 @@ async function narrateInteraction(
     }
 
     case 'Activity': {
-      const callerKind = interaction.callerKind === 'Participant' ? 'Participant' : 'Application';
+      const callerKind = interaction.callerKind === 'Application' ? 'Application' : 'Participant';
       return narrateActivity({
         event_id: eventId,
         callerHandle: callerDisplay,
@@ -333,7 +333,7 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
         // Self-loop guard — never narrate events where the caller is the
         // operator wallet (anti-cheat). Note: our APP_HEX being the callee IS
         // interesting (those are our own program's matches resolving).
-        if (isSelfLoop({ source: interaction.caller, target: operatorHex }, operatorHex)) {
+        if (isSelfLoop({ source: interaction.caller, target: interaction.callee }, operatorHex)) {
           console.log(`[aan-tv] Skipping self-loop interaction ${interaction.id}`);
           recordFailed(interaction.id, 'self-loop: skipped');
           continue;

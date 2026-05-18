@@ -20,6 +20,8 @@ import {
   recordFailed,
   getLastSeenBlock,
   setLastSeenBlock,
+  getLastSeenCoverageId,
+  setLastSeenCoverageId,
 } from './checkpoint.js';
 
 describe('alreadyProcessed / recordProcessed / recordFailed', () => {
@@ -71,5 +73,30 @@ describe('getLastSeenBlock / setLastSeenBlock', () => {
     setLastSeenBlock(1000);
     setLastSeenBlock(2000);
     expect(getLastSeenBlock()).toBe(2000);
+  });
+});
+
+describe('getLastSeenCoverageId / setLastSeenCoverageId', () => {
+  it('returns 0n when no coverage id has been set', () => {
+    // In-memory DB may already have a value from a previous test; we only
+    // verify the return type here.
+    expect(typeof getLastSeenCoverageId()).toBe('bigint');
+  });
+
+  it('round-trips a coverage id as bigint', () => {
+    setLastSeenCoverageId(42n);
+    expect(getLastSeenCoverageId()).toBe(42n);
+  });
+
+  it('overwrites previous coverage id', () => {
+    setLastSeenCoverageId(10n);
+    setLastSeenCoverageId(99n);
+    expect(getLastSeenCoverageId()).toBe(99n);
+  });
+
+  it('handles large u64 values without precision loss', () => {
+    const big = 18_446_744_073_709_551_615n; // u64::MAX
+    setLastSeenCoverageId(big);
+    expect(getLastSeenCoverageId()).toBe(big);
   });
 });

@@ -13,6 +13,10 @@
  */
 
 import { GraphQLClient, gql } from 'graphql-request';
+import { execFile as _execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(_execFile);
 
 const endpoint =
   process.env.INDEXER_GRAPHQL_URL ?? 'https://agents-api.vara.network/graphql';
@@ -26,13 +30,15 @@ function client(): GraphQLClient {
 // ── types ──────────────────────────────────────────────────────────────────
 
 export interface Interaction {
-  id: string;
-  blockNumber: number;
-  fromActor: string;
-  toApplicationId: string;
-  methodName: string;
-  /** Raw JSON string from the indexer — decoded defensively by callers */
-  argsJson: string | null;
+  id: string;                    // indexer auto-gen string id
+  blockNumber: number;           // substrateBlockNumber
+  caller: string;                // hex actor id
+  callerHandle: string | null;   // pre-resolved handle (when registered)
+  callerKind: string;            // "Participant" | "Application"
+  callee: string;                // hex actor id (program being called)
+  calleeHandle: string | null;   // pre-resolved handle of the called program
+  method: string | null;         // method name
+  valuePaidRaw: string | null;   // u128 string, plancks
 }
 
 export interface HandleResult {
@@ -50,6 +56,16 @@ export interface AppMetric {
   postsActive: number;
 }
 
+export interface CoverageItem {
+  id: string;                      // u64 as string
+  requester: string;
+  eventKind: { kind: string; value?: unknown };
+  targetProgram: string | null;
+  hint: string;
+  postedAtBlock: number;
+  chatMsgId: string | null;
+}
+
 // ── handle cache ──────────────────────────────────────────────────────────
 
 const handleCache = new Map<string, { result: HandleResult | null; fetchedAt: number }>();
@@ -61,19 +77,27 @@ function cacheTtl(): number {
 // ── fetchInteractionsSinceBlock ───────────────────────────────────────────
 
 const INTERACTIONS_QUERY = gql`
-  query InteractionsSince($sinceBlock: Int!, $limit: Int!) {
+  query InteractionsSince($sinceBlock: Int!, $limit: Int!, $after: Cursor) {
     allInteractions(
-      first: $limit
-      orderBy: SUBSTRATE_BLOCK_NUMBER_ASC
+      first: $limit,
+      after: $after,
+      orderBy: SUBSTRATE_BLOCK_NUMBER_ASC,
       filter: { substrateBlockNumber: { greaterThan: $sinceBlock } }
     ) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
       nodes {
         id
         substrateBlockNumber
-        fromActor
-        toApplicationId
-        methodName
-        argsJson
+        caller
+        callerHandle
+        callerKind
+        callee
+        calleeHandle
+        method
+        valuePaidRaw
       }
     }
   }
@@ -81,13 +105,20 @@ const INTERACTIONS_QUERY = gql`
 
 interface InteractionsQueryResult {
   allInteractions: {
+    pageInfo: {
+      hasNextPage: boolean;
+      endCursor: string | null;
+    };
     nodes: {
       id: string;
       substrateBlockNumber: number;
-      fromActor: string;
-      toApplicationId: string;
-      methodName: string;
-      argsJson: string | null;
+      caller: string;
+      callerHandle: string | null;
+      callerKind: string;
+      callee: string;
+      calleeHandle: string | null;
+      method: string | null;
+      valuePaidRaw: string | null;
     }[];
   };
 }
@@ -96,19 +127,35 @@ export async function fetchInteractionsSinceBlock(
   sinceBlock: number,
   limit = 50,
 ): Promise<Interaction[]> {
-  const data = await client().request<InteractionsQueryResult>(INTERACTIONS_QUERY, {
-    sinceBlock,
-    limit,
-  });
+  const interactions: Interaction[] = [];
+  let after: string | null = null;
 
-  return data.allInteractions.nodes.map((n) => ({
-    id: n.id,
-    blockNumber: n.substrateBlockNumber,
-    fromActor: n.fromActor,
-    toApplicationId: n.toApplicationId,
-    methodName: n.methodName,
-    argsJson: n.argsJson ?? null,
-  }));
+  do {
+    const data: InteractionsQueryResult = await client().request<InteractionsQueryResult>(
+      INTERACTIONS_QUERY,
+      { sinceBlock, limit, after },
+    );
+
+    interactions.push(
+      ...data.allInteractions.nodes.map((n) => ({
+        id: n.id,
+        blockNumber: Number(n.substrateBlockNumber),
+        caller: n.caller,
+        callerHandle: n.callerHandle ?? null,
+        callerKind: n.callerKind,
+        callee: n.callee,
+        calleeHandle: n.calleeHandle ?? null,
+        method: n.method ?? null,
+        valuePaidRaw: n.valuePaidRaw ?? null,
+      })),
+    );
+
+    after = data.allInteractions.pageInfo.hasNextPage
+      ? data.allInteractions.pageInfo.endCursor
+      : null;
+  } while (after);
+
+  return interactions;
 }
 
 // ── fetchChainTipBlock ────────────────────────────────────────────────────
@@ -141,53 +188,70 @@ export async function fetchChainTipBlock(): Promise<number> {
   return tip;
 }
 
-// ── fetchCoverageQueueSince ───────────────────────────────────────────────
-// We rely on allInteractions filtered by our APP_HEX + RequestCoverage to
-// discover paid coverage requests, then decode argsJson defensively.
-// This avoids needing a typed Sails read client for GetCoverageQueue.
+// ── fetchCoverageQueue ────────────────────────────────────────────────────
+// Reads our own program's GetCoverageQueue via the vara-wallet CLI.
+// This gives us CoverageId, requester, event_kind, target_program, hint,
+// and chat_msg_id (non-null means already covered).
 
-const COVERAGE_REQUESTS_QUERY = gql`
-  query CoverageRequestsSince($appHex: String!, $sinceBlock: Int!, $limit: Int!) {
-    allInteractions(
-      first: $limit
-      orderBy: SUBSTRATE_BLOCK_NUMBER_ASC
-      filter: {
-        toApplicationId: { equalTo: $appHex }
-        methodName: { equalTo: "RequestCoverage" }
-        substrateBlockNumber: { greaterThan: $sinceBlock }
-      }
-    ) {
-      nodes {
-        id
-        substrateBlockNumber
-        fromActor
-        toApplicationId
-        methodName
-        argsJson
-      }
-    }
-  }
-`;
-
-export async function fetchCoverageQueueSince(
-  sinceBlock: number,
+export async function fetchCoverageQueue(
+  cursor: bigint = 0n,
   limit = 50,
-): Promise<Interaction[]> {
-  const appHex = process.env.APP_HEX ?? '';
-  const data = await client().request<InteractionsQueryResult>(COVERAGE_REQUESTS_QUERY, {
-    appHex,
-    sinceBlock,
-    limit,
+): Promise<{ items: CoverageItem[]; nextCursor: bigint | null }> {
+  const appHex = process.env.APP_HEX;
+  const acct = process.env.ACCT;
+  const network = process.env.VARA_NETWORK ?? 'mainnet';
+  const idl = process.env.IDL;
+
+  if (!appHex || !acct || !idl) {
+    throw new Error('fetchCoverageQueue: APP_HEX, ACCT, and IDL env vars are required');
+  }
+
+  const args = JSON.stringify([cursor === 0n ? null : Number(cursor), limit]);
+
+  const { stdout } = await execFileAsync(
+    'vara-wallet',
+    [
+      '--account', acct,
+      '--network', network,
+      '--json',
+      'call',
+      appHex,
+      'AanTv/GetCoverageQueue',
+      '--args', args,
+      '--idl', idl,
+    ],
+    { timeout: 30_000 },
+  );
+
+  const parsed = JSON.parse(stdout) as Record<string, unknown>;
+  if (parsed['programMessage'] != null) {
+    throw new Error(`GetCoverageQueue panic: ${parsed['programMessage']}`);
+  }
+
+  const result = parsed['result'] as {
+    items?: unknown[];
+    next_cursor?: string | number | null;
+  } | null;
+
+  if (!result) return { items: [], nextCursor: null };
+
+  const items: CoverageItem[] = (result.items ?? []).map((it: unknown) => {
+    const item = it as Record<string, unknown>;
+    return {
+      id: String(item['id']),
+      requester: item['requester'] as string,
+      eventKind: item['event_kind'] as { kind: string; value?: unknown },
+      targetProgram: (item['target_program'] as string | null) ?? null,
+      hint: item['hint'] as string,
+      postedAtBlock: Number(item['posted_at_block']),
+      chatMsgId: item['chat_msg_id'] == null ? null : String(item['chat_msg_id']),
+    };
   });
 
-  return data.allInteractions.nodes.map((n) => ({
-    id: n.id,
-    blockNumber: n.substrateBlockNumber,
-    fromActor: n.fromActor,
-    toApplicationId: n.toApplicationId,
-    methodName: n.methodName,
-    argsJson: n.argsJson ?? null,
-  }));
+  const nextCursor =
+    result.next_cursor == null ? null : BigInt(result.next_cursor as string | number);
+
+  return { items, nextCursor };
 }
 
 // ── resolveHandle ─────────────────────────────────────────────────────────
@@ -295,55 +359,4 @@ export async function fetchAppMetric(appHex: string, seasonId = 1): Promise<AppM
   } catch {
     return null;
   }
-}
-
-// ── argsJson decoder (defensive) ──────────────────────────────────────────
-
-/**
- * Attempt to parse argsJson from an indexer interaction.
- *
- * The indexer stores args as a JSON array matching the IDL positional params.
- * For RequestCoverage(event_kind, target_program, hint):
- *   argsJson = ["MarketResolved", "0x...", "some hint"]
- *           or [{"Custom": null}, null, "some hint"]
- *
- * We defensively handle both tagged-enum objects and plain strings.
- * Unknown formats return null for the field rather than throwing.
- */
-export function decodeRequestCoverageArgs(argsJson: string | null): {
-  eventKind: string | null;
-  targetProgram: string | null;
-  hint: string;
-} {
-  const fallback = { eventKind: null, targetProgram: null, hint: '' };
-  if (!argsJson) return fallback;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(argsJson);
-  } catch {
-    return fallback;
-  }
-
-  if (!Array.isArray(parsed)) return fallback;
-
-  // event_kind: may be plain string or { "MarketResolved": null } / { "Custom": null }
-  let eventKind: string | null = null;
-  const rawKind = parsed[0];
-  if (typeof rawKind === 'string') {
-    eventKind = rawKind;
-  } else if (rawKind !== null && typeof rawKind === 'object') {
-    const keys = Object.keys(rawKind as Record<string, unknown>);
-    if (keys.length > 0) eventKind = keys[0];
-  }
-
-  // target_program: may be hex string or null
-  const rawTarget = parsed[1];
-  const targetProgram = typeof rawTarget === 'string' ? rawTarget : null;
-
-  // hint: must be a string; cap at 240 chars defensively
-  const rawHint = parsed[2];
-  const hint = typeof rawHint === 'string' ? rawHint.slice(0, 240) : '';
-
-  return { eventKind, targetProgram, hint };
 }
