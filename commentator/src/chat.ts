@@ -20,6 +20,25 @@ import { randomBytes } from 'crypto';
 
 const execFile = promisify(_execFile);
 
+// ── executor abstraction ───────────────────────────────────────────────────
+//
+// We use a dependency-injection pattern instead of vi.mock('node:child_process')
+// because mocking ESM child_process internals via vitest is brittle with
+// nodenext module resolution. Tests inject a mock executor directly.
+// Production code uses the default (spawnVaraWallet).
+
+/** Minimal shape of execFile output the caller cares about. */
+export interface ExecResult {
+  stdout: string;
+}
+
+/** Signature of the executor callback injected into post/mark functions. */
+export type Executor = (command: string, args: string[], opts: { timeout: number }) => Promise<ExecResult>;
+
+const defaultExecutor: Executor = async (command, args, opts) => {
+  return execFile(command, args, opts);
+};
+
 // ── rate-limit tracker ────────────────────────────────────────────────────
 
 let lastChatPostMs = 0;
@@ -30,6 +49,11 @@ async function enforceRateLimit(): Promise<void> {
   if (elapsed < RATE_LIMIT_GAP_MS) {
     await new Promise<void>((r) => setTimeout(r, RATE_LIMIT_GAP_MS - elapsed));
   }
+}
+
+/** Reset rate-limit state. For use in tests only. */
+export function _resetRateLimitForTesting(): void {
+  lastChatPostMs = 0;
 }
 
 // ── env helpers ───────────────────────────────────────────────────────────
@@ -52,18 +76,24 @@ export interface PostResult {
   txHash: string;
 }
 
-export async function postChatAsApplication(args: {
-  body: string;
-  mentions: ChatMention[];
-}): Promise<PostResult> {
+export async function postChatAsApplication(
+  args: { body: string; mentions: ChatMention[] },
+  executor: Executor = defaultExecutor,
+): Promise<PostResult> {
   await enforceRateLimit();
 
   const pid = requireEnv('PID');
   const appHex = requireEnv('APP_HEX');
   const acct = requireEnv('ACCT');
   const voucherNetwork = process.env.VARA_NETWORK ?? 'mainnet';
-  const voucherId = process.env.VOUCHER_ID ?? '';
   const networkIdl = requireEnv('NETWORK_IDL');
+
+  // Guard: VOUCHER_ID must be set before issuing writes — if not, crash early
+  // rather than letting the call fail silently with a cryptic chain error.
+  const voucherId = process.env.VOUCHER_ID;
+  if (!voucherId) {
+    throw new Error('VOUCHER_ID is not set — run ensureFresh() before posting');
+  }
 
   // Author MUST be Application for messagesSent credit
   const author = { Application: appHex };
@@ -89,14 +119,15 @@ export async function postChatAsApplication(args: {
       'Chat/Post',
       '--args-file', tmpPath,
       '--idl', networkIdl,
-      ...(voucherId ? ['--voucher', voucherId] : []),
+      '--voucher', voucherId,
     ];
 
-    const { stdout } = await execFile('vara-wallet', varaArgs, { timeout: 60_000 });
+    const { stdout } = await executor('vara-wallet', varaArgs, { timeout: 60_000 });
 
     lastChatPostMs = Date.now();
 
-    // Parse response: vara-wallet --json wraps in {"result": ...}
+    // Parse response: vara-wallet --json wraps every response in {"result": ...}
+    // (universal wire-format rule #4 from SKILL.md)
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(stdout) as Record<string, unknown>;
@@ -104,9 +135,22 @@ export async function postChatAsApplication(args: {
       throw new Error(`vara-wallet returned non-JSON: ${stdout.slice(0, 200)}`);
     }
 
+    // Check for contract panics (RateLimited, Unauthorized, TooManyMentions, etc.)
+    // programMessage is non-null when the contract panicked — mirror the pattern
+    // already used in markCovered (see below).
+    const programMessage = parsed['programMessage'];
+    if (programMessage != null) {
+      throw new Error(`Chat/Post panicked: ${JSON.stringify(programMessage)}`);
+    }
+
+    // Chat/Post returns the new message id in .result (e.g. "32").
+    // null result means the call landed but the contract returned void — unexpected.
+    if (parsed['result'] == null || parsed['result'] === 'null') {
+      throw new Error(`Chat/Post returned null result (expected msg id)`);
+    }
+
     const txHash = (parsed['txHash'] as string | undefined) ?? '';
-    // Chat/Post returns the message id in .result
-    const msgId = String((parsed['result'] as string | number | undefined) ?? '0');
+    const msgId = String(parsed['result'] as string | number);
 
     return { msgId, txHash };
   } finally {
@@ -119,13 +163,19 @@ export async function postChatAsApplication(args: {
 export async function markCovered(
   coverageId: bigint,
   chatMsgId: bigint,
+  executor: Executor = defaultExecutor,
 ): Promise<void> {
   const appHex = requireEnv('APP_HEX');
   const acct = requireEnv('ACCT');
   const voucherNetwork = process.env.VARA_NETWORK ?? 'mainnet';
-  const voucherId = process.env.VOUCHER_ID ?? '';
   // Our program IDL (Sails), not the network IDL
   const idl = requireEnv('IDL');
+
+  // Guard: VOUCHER_ID must be set — crash early rather than silently failing
+  const voucherId = process.env.VOUCHER_ID;
+  if (!voucherId) {
+    throw new Error('VOUCHER_ID is not set — run ensureFresh() before marking covered');
+  }
 
   // MarkCovered(coverage_id: u64, chat_msg_id: u64)
   const callArgs = [String(coverageId), String(chatMsgId)];
@@ -143,10 +193,10 @@ export async function markCovered(
       'AanTv/MarkCovered',
       '--args-file', tmpPath,
       '--idl', idl,
-      ...(voucherId ? ['--voucher', voucherId] : []),
+      '--voucher', voucherId,
     ];
 
-    const { stdout } = await execFile('vara-wallet', varaArgs, { timeout: 60_000 });
+    const { stdout } = await executor('vara-wallet', varaArgs, { timeout: 60_000 });
 
     // Check for errors in the response
     let parsed: Record<string, unknown>;
@@ -157,7 +207,7 @@ export async function markCovered(
     }
 
     const programMessage = parsed['programMessage'];
-    if (programMessage && programMessage !== null) {
+    if (programMessage != null) {
       throw new Error(`MarkCovered failed: ${JSON.stringify(programMessage)}`);
     }
   } finally {
