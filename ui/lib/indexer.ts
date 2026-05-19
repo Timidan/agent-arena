@@ -227,6 +227,54 @@ export async function fetchRecentActivity(): Promise<Interaction[]> {
   return data.allInteractions.nodes;
 }
 
+// ─── Broadcast rate: hourly chat counts for last 24h ─────────────────────────
+
+export interface HourlyCount {
+  hour: number; // 0 = 24h ago, 23 = current hour
+  count: number;
+}
+
+export async function fetchBroadcastRateLast24h(
+  appHex: string
+): Promise<HourlyCount[]> {
+  const nowMs = Date.now();
+  const since24h = nowMs - 24 * 60 * 60 * 1000;
+
+  const data = await gql<{ allChatMessages: { nodes: { ts: string }[] } }>(
+    `
+    query BroadcastRate($authorRef: String!, $since: BigInt!) {
+      allChatMessages(
+        first: 500
+        orderBy: SUBSTRATE_BLOCK_NUMBER_DESC
+        filter: {
+          authorRef: { equalTo: $authorRef }
+          ts: { greaterThanOrEqualTo: $since }
+        }
+      ) {
+        nodes { ts }
+      }
+    }
+  `,
+    {
+      authorRef: `Application:${appHex}`,
+      since: String(since24h),
+    }
+  );
+
+  // Build 24 buckets; bucket 0 = 24h ago, bucket 23 = this hour
+  const buckets = new Array<number>(24).fill(0);
+  for (const { ts } of data.allChatMessages.nodes) {
+    const msAgo = nowMs - parseInt(ts, 10);
+    const hoursAgo = Math.floor(msAgo / 3_600_000);
+    if (hoursAgo >= 0 && hoursAgo < 24) {
+      // hoursAgo=0 → current hour → bucket 23
+      buckets[23 - hoursAgo] += 1;
+    }
+  }
+
+  return buckets.map((count, hour) => ({ hour, count }));
+}
+
 export async function fetchAanTvInteractions(): Promise<Interaction[]> {
   const data = await gql<{ allInteractions: { nodes: Interaction[] } }>(`
     query {
