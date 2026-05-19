@@ -1,0 +1,79 @@
+/// Batch input entry (no id/block — assigned by contract).
+type StatBatchEntry = struct {
+  app: actor_id,
+  kind: StatKind,
+  value: u64,
+  note: str,
+};
+
+/// The kind of stat being recorded.
+type StatKind = enum {
+  Calls,
+  Mentions,
+  Posts,
+  Activity,
+  Custom,
+};
+
+type Error = enum {
+  Unauthorized,
+  InsufficientPayment,
+  InvalidArg,
+  ArithmeticOverflow,
+  InsufficientFunds,
+  RefundFailed,
+  BatchTooLarge,
+};
+
+/// Aggregated stats for an app.
+type AppStatsAggregate = struct {
+  total_calls: u64,
+  total_mentions: u64,
+  total_posts: u64,
+  latest_block: u32,
+};
+
+/// Paginated stat page.
+type StatPage = struct {
+  items: vec StatEntry,
+  next_cursor: opt u64,
+};
+
+/// A single stat entry.
+type StatEntry = struct {
+  id: u64,
+  submitter: actor_id,
+  app: actor_id,
+  kind: StatKind,
+  value: u64,
+  note: str,
+  block: u32,
+};
+
+/// Caller summary for GetTopCallers.
+type CallerSummary = struct {
+  submitter: actor_id,
+  count: u64,
+};
+
+constructor {
+  Create : ();
+};
+
+service AanTvData {
+  /// Admin-only: bulk-import stats (trusted bot source). Returns count inserted.
+  SubmitBatch : (stats: vec StatBatchEntry) -> result (u32, Error);
+  /// Submit a stat entry. Requires 0.01 VARA fee (excess is refunded).
+  SubmitStat : (app: actor_id, kind: StatKind, value: u64, note: str) -> result (u64, Error);
+  /// Admin-only: sweep protocol fees.
+  Sweep : (amount: u128) -> result (null, Error);
+  /// Get aggregated stats for an app.
+  query GetAppStats : (app: actor_id) -> AppStatsAggregate;
+  /// Read protocol balance (for tests).
+  query GetProtocolBalance : () -> u128;
+  /// Paginated recent stats. cursor=None starts from ID 1.
+  query GetRecent : (cursor: opt u64, limit: u32) -> StatPage;
+  /// Top submitters by count.
+  query GetTopCallers : (limit: u32) -> vec CallerSummary;
+};
+

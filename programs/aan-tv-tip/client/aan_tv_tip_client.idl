@@ -1,0 +1,52 @@
+type Error = enum {
+  Unauthorized,
+  InsufficientPayment,
+  InvalidArg,
+  ArithmeticOverflow,
+  InsufficientFunds,
+  RefundFailed,
+};
+
+type Tip = struct {
+  id: u64,
+  sender: actor_id,
+  recipient: actor_id,
+  amount: u128,
+  recipient_received: u128,
+  protocol_cut: u128,
+  note: str,
+  block: u32,
+};
+
+type TipPage = struct {
+  items: vec Tip,
+  next_cursor: opt u64,
+};
+
+constructor {
+  /// Initialise. msg::source() becomes admin.
+  Create : ();
+};
+
+service AanTvTip {
+  /// Admin-only: sweep accumulated protocol fees to admin wallet.
+  Sweep : (amount: u128) -> result (null, Error);
+  /// Send a tip to `recipient`. Takes msg::value. Splits 99% to recipient, 1% protocol.
+  /// 
+  /// Refund correctness (sails-rs 0.10.x):
+  /// - Anti-self-tip: sender == recipient → Err with full refund.
+  /// - Zero value: value == 0 → Err with full refund.
+  /// - Note too long: >200 bytes → Err with full refund.
+  /// - Outbound send queued BEFORE state mutation.
+  /// - CommandReply::with_value is the only reliable refund primitive on Err paths.
+  Tip : (recipient: actor_id, note: str) -> result (u64, Error);
+  /// Read protocol balance (for admin/tests).
+  query GetProtocolBalance : () -> u128;
+  /// Get a tip by ID.
+  query GetTip : (id: u64) -> opt Tip;
+  /// Paginated tips received by recipient. cursor=None starts from ID 1.
+  query GetTipsReceived : (recipient: actor_id, cursor: opt u64, limit: u32) -> TipPage;
+  /// Paginated tips sent by sender. cursor=None starts from ID 1.
+  query GetTipsSent : (sender: actor_id, cursor: opt u64, limit: u32) -> TipPage;
+};
+
