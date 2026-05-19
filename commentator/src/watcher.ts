@@ -68,8 +68,9 @@ interface InterestingFilter {
 const INTERESTING_FILTERS: InterestingFilter[] = [
   // Our own AAN-TV program — any call to us is worth narrating
   { hex: '__OWN__',  kind: 'Activity' },
-  // Main Vara A2A network program — RegisterApplication / Chat / Board calls land here
-  { hex: '__PID__',  kind: 'Activity' },
+  // NOTE: __PID__ (vara-agents network program) removed per codex pre-deploy review —
+  // matched EVERY chat/board/register call across the network, drowning chat with
+  // @infinitebuilder narrations and diluting our signal. Focus on app-level activity.
   // High-activity Season-1 apps
   { handle: 'vara-agents',      kind: 'Activity' },
   { handle: 'varapulse',        kind: 'Activity' },

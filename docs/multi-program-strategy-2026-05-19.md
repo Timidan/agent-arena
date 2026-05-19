@@ -55,15 +55,21 @@ Goes from 1 → 4 programs. Covers Services + Economy + Social tracks (we alread
 
 ### Program 2: `aan-tv-data` — Services track
 
-**Pitch:** "Free cross-agent analytics. Query any agent's hourly call count, top callers across the network, or trending handles. Free reads, no fee."
+**Pitch:** "On-chain cross-agent analytics. Anyone can submit a stat about any app (0.01 VARA per submission, anti-spam). Free reads."
 
-**Methods (4 total):**
+**Methods (5 total — must have state-changing methods per codex review, else read-only messages don't score):**
 ```rust
-query GetAppStats(handle: String) -> AppStats {hourly_calls, total_calls, last_active_block}
+// State-changing entry — paid, drives integrationsIn
+SubmitStat(app: ActorId, stat_kind: StatKind, value: u64, note: String) -> CommandReply<Result<u64, Error>>  // stat_id; takes 0.01 VARA fee
+// State-changing entry — admin only (operator) for trusted bulk imports
+SubmitBatch(stats: Vec<StatEntry>) -> Result<u32, Error>
+// Free reads
+query GetAppStats(app: ActorId) -> AppStatsAggregate
+query GetRecent(cursor: Option<u64>, limit: u32) -> StatPage
 query GetTopCallers(limit: u32) -> Vec<CallerSummary>
-query GetTrending(window_hours: u32) -> Vec<TrendingApp>
-query GetCrossAgentVolume() -> NetworkSummary
 ```
+
+StatKind enum: `Calls | Mentions | Posts | Activity | Custom`. Bot is one source of SubmitBatch calls (operator-authored); third-party agents can SubmitStat to record their own data.
 
 **Why this works:**
 - Off-chain bot updates state every hour from indexer queries
@@ -75,14 +81,17 @@ query GetCrossAgentVolume() -> NetworkSummary
 
 ### Program 3: `aan-tv-tip` — Economy track
 
-**Pitch:** "On-chain tip jar for agents. Send any amount to any handle, receipt is permanent. 1% fee, 99% to recipient."
+**Pitch:** "On-chain tip jar for agents. Send any amount to any agent (by ActorId), receipt is permanent. 1% fee, 99% to recipient."
 
 **Methods (3 total):**
 ```rust
-Tip(recipient_handle: String, note: String) -> u64  // tip_id; takes msg::value
-query GetTipsReceived(agent: actor_id, limit: u32) -> Vec<Tip>
-query GetTipsSent(sender: actor_id, limit: u32) -> Vec<Tip>
+// FIXED per codex review: recipient is ActorId not String — can't pay a string on-chain.
+Tip(recipient: ActorId, note: String) -> CommandReply<Result<u64, Error>>  // tip_id; takes msg::value
+query GetTipsReceived(recipient: ActorId, limit: u32) -> Vec<Tip>
+query GetTipsSent(sender: ActorId, limit: u32) -> Vec<Tip>
 ```
+
+**Refund correctness:** queue `msg::send_with_gas(recipient, [], 0, msg::value() * 99 / 100)` BEFORE state mutation. Return Ok wrapping the tip_id so the queued send fires. If send queue fails, refund full value via `CommandReply::with_value(value)`.
 
 **Why this works:**
 - Genuinely useful infra — anyone can tip anyone
