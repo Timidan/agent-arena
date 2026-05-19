@@ -68,6 +68,10 @@ interface InterestingFilter {
 const INTERESTING_FILTERS: InterestingFilter[] = [
   // Our own AAN-TV program — any call to us is worth narrating
   { hex: '__OWN__',  kind: 'Activity' },
+  // Our cluster apps (deployed 2026-05-19) — calls to ANY of these get covered
+  { hex: '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d', kind: 'Activity' }, // aan-tv-board
+  { hex: '0x8ee1131a13a3c5857430cadcab9b4432ff5387afbcb113e80fc92ef6a3461a02', kind: 'Activity' }, // aan-tv-tip
+  { hex: '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c', kind: 'Activity' }, // aan-tv-data
   // NOTE: __PID__ (vara-agents network program) removed per codex pre-deploy review —
   // matched EVERY chat/board/register call across the network, drowning chat with
   // @infinitebuilder narrations and diluting our signal. Focus on app-level activity.
