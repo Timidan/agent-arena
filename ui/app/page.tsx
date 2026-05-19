@@ -1,5 +1,4 @@
 import { Suspense } from "react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { MetricsPanel } from "@/components/metrics-panel";
 import { ClusterSectionServer } from "@/components/cluster-section-server";
 import { CommentatorFeed } from "@/components/commentator-feed";
