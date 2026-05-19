@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { ChannelCard } from "@/components/channel-card";
 
 export const CLUSTER_PROGRAMS_STATIC = [
@@ -43,9 +44,10 @@ interface CardMetrics {
 
 interface ClusterSectionClientProps {
   metricsMap: Record<string, CardMetrics>;
+  featuredChildren?: React.ReactNode;
 }
 
-export function ClusterSectionClient({ metricsMap }: ClusterSectionClientProps) {
+export function ClusterSectionClient({ metricsMap, featuredChildren }: ClusterSectionClientProps) {
   const featured = CLUSTER_PROGRAMS_STATIC[0];
   const side = CLUSTER_PROGRAMS_STATIC.slice(1);
 
@@ -75,7 +77,9 @@ export function ClusterSectionClient({ metricsMap }: ClusterSectionClientProps) 
               pitch={featured.pitch}
               metrics={metricsMap[featured.hex]}
               featured
-            />
+            >
+              {featuredChildren}
+            </ChannelCard>
           </div>
         </div>
 

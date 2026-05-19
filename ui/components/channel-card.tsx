@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { Copy, Check } from "@phosphor-icons/react";
 import { formatNumber } from "@/lib/format";
 
@@ -92,6 +92,7 @@ export interface ChannelCardProps {
   emptyState?: string;
   metrics?: ChannelCardMetrics;
   featured?: boolean;
+  children?: React.ReactNode;
 }
 
 export function ChannelCard({
@@ -103,6 +104,7 @@ export function ChannelCard({
   emptyState,
   metrics,
   featured,
+  children,
 }: ChannelCardProps) {
   const tc = TRACK_CONFIG[track] ?? {
     color: "#7A8896",
@@ -221,6 +223,9 @@ export function ChannelCard({
             </div>
           ))}
         </div>
+
+        {/* Injected slot — used by CH01 for sparkline + feed monitor */}
+        {children && <div className="flex flex-col gap-4">{children}</div>}
 
         {/* Hex */}
         <div className="border-t border-[#2A3340] pt-2">
