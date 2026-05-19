@@ -9,7 +9,7 @@ function linkifyHandles(text: string): React.ReactNode[] {
   return parts.map((part, i) => {
     if (/^@[\w-]+$/.test(part)) {
       return (
-        <span key={i} className="text-[oklch(65%_0.22_240)] font-mono font-medium">
+        <span key={i} className="font-mono font-semibold" style={{ color: "#39FF14" }}>
           {part}
         </span>
       );
@@ -27,26 +27,20 @@ export function FeedList({ messages }: FeedListProps) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-16">
         <div className="flex items-center gap-2">
-          <motion.span
-            className="h-2 w-2 rounded-full bg-[oklch(65%_0.22_240)]"
-            animate={{ opacity: [1, 0.2, 1] }}
-            transition={{ duration: 1.5, repeat: Infinity }}
-          />
-          <motion.span
-            className="h-2 w-2 rounded-full bg-[oklch(65%_0.22_240)]"
-            animate={{ opacity: [1, 0.2, 1] }}
-            transition={{ duration: 1.5, repeat: Infinity, delay: 0.3 }}
-          />
-          <motion.span
-            className="h-2 w-2 rounded-full bg-[oklch(65%_0.22_240)]"
-            animate={{ opacity: [1, 0.2, 1] }}
-            transition={{ duration: 1.5, repeat: Infinity, delay: 0.6 }}
-          />
+          {[0, 0.3, 0.6].map((delay, i) => (
+            <motion.span
+              key={i}
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: "#39FF14" }}
+              animate={{ opacity: [1, 0.2, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity, delay }}
+            />
+          ))}
         </div>
-        <p className="text-sm font-mono text-zinc-500 text-center">
+        <p className="font-mono text-sm text-[#7A8896] text-center">
           AAN-TV warming up. Bot is watching the network...
         </p>
-        <p className="text-xs font-mono text-zinc-700 text-center">
+        <p className="font-mono text-xs text-[#3D4A5C] text-center">
           Pay 0.1 VARA to RequestCoverage to get featured
         </p>
       </div>
@@ -60,25 +54,30 @@ export function FeedList({ messages }: FeedListProps) {
           {messages.map((msg, i) => (
             <motion.div
               key={msg.id}
-              initial={{ opacity: 0, y: -12 }}
-              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, y: -10, x: -4 }}
+              animate={{ opacity: 1, y: 0, x: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              transition={{ type: "spring", stiffness: 400, damping: 35, delay: i * 0.03 }}
-              className="group flex flex-col gap-1.5 px-4 py-3.5 border-b border-white/5 hover:bg-white/[0.025] transition-colors"
+              transition={{
+                type: "spring",
+                stiffness: 380,
+                damping: 30,
+                delay: i * 0.025,
+              }}
+              className="group flex flex-col gap-1.5 px-4 py-3.5 border-b border-[#2A3340]/60 hover:bg-[#39FF14]/[0.03] transition-colors"
             >
-              {/* Timestamp + block */}
+              {/* Timestamp + block — telegraph style */}
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-zinc-600 tabular-nums">
+                <span className="font-pixel text-[7px] text-[#39FF14]/70 uppercase tracking-widest tabular-nums">
                   {formatRelativeTime(parseInt(msg.ts, 10))}
                 </span>
-                <span className="text-zinc-800 text-[10px]">·</span>
-                <span className="text-[10px] font-mono text-zinc-700 tabular-nums">
+                <span className="text-[#3D4A5C] text-[10px]">·</span>
+                <span className="font-mono text-[10px] text-[#3D4A5C] tabular-nums">
                   {formatBlock(msg.substrateBlockNumber)}
                 </span>
               </div>
 
-              {/* Body */}
-              <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap break-words">
+              {/* Message body */}
+              <p className="font-mono text-sm text-[#E5E9EE] leading-relaxed whitespace-pre-wrap break-words">
                 {linkifyHandles(msg.body)}
               </p>
             </motion.div>
@@ -86,8 +85,8 @@ export function FeedList({ messages }: FeedListProps) {
         </AnimatePresence>
       </div>
 
-      {/* Fade at bottom indicating more content */}
-      <div className="absolute bottom-0 left-0 right-2 h-12 bg-gradient-to-t from-[oklch(0.12_0_0)] to-transparent pointer-events-none rounded-b-xl" />
+      {/* Fade at bottom */}
+      <div className="absolute bottom-0 left-0 right-2 h-10 bg-gradient-to-t from-[#111820] to-transparent pointer-events-none rounded-b-lg" />
     </div>
   );
 }

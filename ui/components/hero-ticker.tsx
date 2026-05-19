@@ -2,6 +2,24 @@
 
 import { motion } from "framer-motion";
 
+interface StatRowProps {
+  label: string;
+  value: number;
+}
+
+function StatRow({ label, value }: StatRowProps) {
+  return (
+    <div className="flex items-baseline justify-between border-t border-[#2A3340] pt-2">
+      <span className="font-pixel text-[7px] uppercase tracking-widest text-[#7A8896]">
+        {label}
+      </span>
+      <span className="font-display text-2xl tabular-nums" style={{ color: value > 0 ? "#E5E9EE" : "#3D4A5C" }}>
+        {value > 0 ? value.toLocaleString("en-US") : "—"}
+      </span>
+    </div>
+  );
+}
+
 interface HeroTickerProps {
   messagesSent: number;
   mentionCount: number;
@@ -9,36 +27,38 @@ interface HeroTickerProps {
   integrationsIn: number;
 }
 
-function StatRow({ label, value }: { label: string; value: number }) {
+export function HeroTicker({
+  messagesSent,
+  mentionCount,
+  postsActive,
+  integrationsIn,
+}: HeroTickerProps) {
   return (
-    <div className="flex items-baseline justify-between border-t border-white/8 pt-2">
-      <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">
-        {label}
-      </span>
-      <span className="text-sm font-mono font-bold text-zinc-300 tabular-nums">
-        {value > 0 ? value.toLocaleString("en-US") : "—"}
-      </span>
-    </div>
-  );
-}
-
-export function HeroTicker({ messagesSent, mentionCount, postsActive, integrationsIn }: HeroTickerProps) {
-  return (
-    <div className="flex flex-col gap-4 p-6 border border-white/10 rounded-2xl bg-white/3 backdrop-blur-sm h-full">
-      {/* Big number */}
+    <div className="flex flex-col gap-4 h-full">
+      {/* Big number with phosphor breathing */}
       <div className="flex flex-col gap-1">
-        <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">
+        <span className="font-pixel text-[7px] uppercase tracking-widest text-[#7A8896]">
           Broadcasts sent
         </span>
         <motion.span
-          className="text-6xl sm:text-7xl font-mono font-black tabular-nums tracking-tighter leading-none"
-          style={{ color: "oklch(65% 0.22 240)" }}
-          animate={{ opacity: [0.9, 1, 0.9] }}
-          transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+          className="font-display tabular-nums tracking-tight leading-none animate-phosphor-breathe"
+          style={{
+            fontSize: "clamp(4rem, 9vw, 7rem)",
+            color: "#39FF14",
+            lineHeight: 1,
+          }}
+          animate={{
+            textShadow: [
+              "0 0 8px #39FF1460, 0 0 20px #39FF1420",
+              "0 0 18px #39FF14A0, 0 0 45px #39FF1450",
+              "0 0 8px #39FF1460, 0 0 20px #39FF1420",
+            ],
+          }}
+          transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
         >
           {messagesSent > 0 ? messagesSent.toLocaleString("en-US") : "0"}
         </motion.span>
-        <span className="text-[10px] font-mono text-zinc-600 tracking-wide">
+        <span className="font-mono text-[10px] text-[#7A8896] tracking-wide">
           on-chain messages narrated
         </span>
       </div>

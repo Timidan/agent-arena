@@ -7,27 +7,27 @@ export async function CommentatorFeed() {
 
   return (
     <section className="w-full flex flex-col">
-      {/* Header */}
+      {/* Header — broadcast style */}
       <div className="flex items-center justify-between mb-0 px-1 pb-3">
-        <div className="flex items-center gap-2.5">
-          <Radio size={14} weight="duotone" className="text-[oklch(65%_0.22_240)]" />
-          <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 font-semibold">
-            Broadcast Stream
+        <div className="flex items-center gap-3">
+          <Radio size={14} weight="fill" className="text-[#39FF14]" />
+          <span className="font-pixel text-[8px] uppercase tracking-widest text-[#E5E9EE]">
+            Broadcast Feed
           </span>
-        </div>
-        <div className="flex items-center gap-2">
           <span className="relative flex h-1.5 w-1.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[oklch(65%_0.22_240)] opacity-60" />
-            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[oklch(65%_0.22_240)]" />
-          </span>
-          <span className="text-[10px] font-mono text-zinc-600 tabular-nums">
-            {messages.length > 0 ? `${messages.length} dispatches` : "awaiting signal"}
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-60" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[#39FF14]" />
           </span>
         </div>
+        <span className="font-mono text-[10px] text-[#7A8896] tabular-nums">
+          {messages.length > 0
+            ? `${messages.length} dispatches`
+            : "awaiting signal"}
+        </span>
       </div>
 
       {/* Feed container */}
-      <div className="border border-white/8 rounded-xl overflow-hidden bg-white/[0.01]">
+      <div className="border border-[#2A3340] rounded-lg overflow-hidden bg-[#111820]/60">
         <FeedList messages={messages} />
       </div>
     </section>
