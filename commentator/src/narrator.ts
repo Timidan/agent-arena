@@ -249,6 +249,124 @@ export function narrateCustom(facts: CustomFacts): NarratedPost {
   return { body, mentions };
 }
 
+// ── narrateHourlyDigest ──────────────────────────────────────────────────────
+
+export interface DigestFacts {
+  /** e.g. "21:00 UTC" */
+  hour_label: string;
+  totalCalls: number;
+  paidCalls: number;
+  /** sum in VARA (plancks ÷ 1e12) */
+  valueVara: number;
+  /** up to 3 top callees */
+  topCallees: Array<{ handle: string; hex: string; count: number }>;
+  /** up to 2 top callers */
+  topCallers: Array<{ handle: string; hex: string; kind: 'Participant' | 'Application'; count: number }>;
+}
+
+/**
+ * Build the hourly digest post. Enforces the 240-byte body budget by:
+ *   1. Dropping the value clause first
+ *   2. Trimming topCallees from 3 → 2 → 1
+ *   3. Trimming topCallers from 2 → 1 → 0
+ * If totalCalls === 0 returns a "quiet on the network" fallback.
+ */
+export function narrateHourlyDigest(facts: DigestFacts): NarratedPost {
+  const MAX_BODY_BYTES = 240;
+
+  // ── quiet fallback ────────────────────────────────────────────────────────
+  if (facts.totalCalls === 0) {
+    return {
+      body: 'HOURLY DIGEST · last 60min: quiet on the network. Bot watching for activity. covered by #AAN-TV',
+      mentions: [],
+    };
+  }
+
+  // ── helper: build body string ─────────────────────────────────────────────
+  function buildBody(callees: typeof facts.topCallees, callers: typeof facts.topCallers, includeValue: boolean): string {
+    const header = `HOURLY DIGEST · ${facts.hour_label} · last 60min on Vara A2A: ${facts.totalCalls} cross-agent calls.`;
+
+    const topCalleesStr = callees.length > 0
+      ? `TOP CALLEES: ${callees.map((c) => `@${c.handle}(${c.count})`).join(', ')}.`
+      : '';
+
+    const topCallersStr = callers.length > 0
+      ? `TOP CALLERS: ${callers.map((c) => `@${c.handle}(${c.count})`).join(', ')}.`
+      : '';
+
+    const valueClause = includeValue && facts.paidCalls > 0 && facts.valueVara > 0
+      ? `Real VARA flow: ${facts.valueVara.toFixed(facts.valueVara < 1 ? 4 : 2)} VARA across ${facts.paidCalls} paid calls.`
+      : '';
+
+    const parts = [header];
+    if (topCalleesStr) parts.push(topCalleesStr);
+    if (topCallersStr) parts.push(topCallersStr);
+    if (valueClause) parts.push(valueClause);
+    parts.push('covered by #AAN-TV');
+
+    return parts.join(' ');
+  }
+
+  // ── greedy trim until body fits ───────────────────────────────────────────
+  // Strategy: try with full lists + value clause; then progressively drop:
+  //   1. value clause
+  //   2. callers: 2→1→0
+  //   3. callees: 3→2→1
+  // Each step re-checks byte count.
+
+  function fits(s: string): boolean {
+    return Buffer.byteLength(s, 'utf8') <= MAX_BODY_BYTES;
+  }
+
+  let callees = facts.topCallees.slice(0, 3);
+  let callers = facts.topCallers.slice(0, 2);
+
+  // Try with value clause
+  let body = buildBody(callees, callers, true);
+  if (fits(body)) {
+    return { body, mentions: buildMentions(callees, callers) };
+  }
+
+  // Drop value clause
+  body = buildBody(callees, callers, false);
+  if (fits(body)) {
+    return { body, mentions: buildMentions(callees, callers) };
+  }
+
+  // Trim callers
+  while (callers.length > 0 && !fits(buildBody(callees, callers, false))) {
+    callers = callers.slice(0, callers.length - 1);
+  }
+  body = buildBody(callees, callers, false);
+  if (fits(body)) {
+    return { body, mentions: buildMentions(callees, callers) };
+  }
+
+  // Trim callees
+  while (callees.length > 1 && !fits(buildBody(callees, callers, false))) {
+    callees = callees.slice(0, callees.length - 1);
+  }
+  body = buildBody(callees, callers, false);
+  if (fits(body)) {
+    return { body, mentions: buildMentions(callees, callers) };
+  }
+
+  // Last resort: hard truncate
+  body = truncateBody(buildBody(callees.slice(0, 1), [], false));
+  return { body, mentions: buildMentions(callees.slice(0, 1), []) };
+}
+
+function buildMentions(
+  callees: Array<{ handle: string; hex: string; count: number }>,
+  callers: Array<{ handle: string; hex: string; kind: 'Participant' | 'Application'; count: number }>,
+): { kind: 'Participant' | 'Application'; hex: string }[] {
+  const raw: { kind: 'Participant' | 'Application'; hex: string }[] = [
+    ...callees.map((c) => ({ kind: 'Application' as const, hex: c.hex })),
+    ...callers.map((c) => ({ kind: c.kind, hex: c.hex })),
+  ];
+  return dedupMentions(raw);
+}
+
 // ── narrateActivity ──────────────────────────────────────────────────────────
 // Generic "X interacted with Y" narration for the live indexer which doesn't
 // expose method names. Use when looksInteresting matches a callee but no

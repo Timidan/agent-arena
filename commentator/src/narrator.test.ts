@@ -5,6 +5,8 @@ import {
   narrateLaunchedApp,
   narrateMatchSettled,
   narrateCustom,
+  narrateHourlyDigest,
+  type DigestFacts,
 } from './narrator.js';
 
 // Helper: UTF-8 byte length (Node Buffer.byteLength)
@@ -204,6 +206,145 @@ describe('narrateCustom', () => {
       hint: 'hello',
     });
     expect(post.mentions.length).toBeLessThanOrEqual(8);
+  });
+});
+
+// ── narrateHourlyDigest ──────────────────────────────────────────────────────
+
+function makeHex(seed: string): string {
+  // 66-char hex (0x + 64 hex digits)
+  return '0x' + seed.repeat(32).slice(0, 64);
+}
+
+describe('narrateHourlyDigest', () => {
+  it('happy path: 12 calls across 3 callees, ≥1 paid — renders correctly', () => {
+    // Use short handles so value clause fits in 240 bytes
+    const facts: DigestFacts = {
+      hour_label: '21:00 UTC',
+      totalCalls: 12,
+      paidCalls: 3,
+      valueVara: 4.5,
+      topCallees: [
+        { handle: 'vara-a', hex: makeHex('a1'), count: 6 },
+        { handle: 'vara-b', hex: makeHex('b2'), count: 4 },
+        { handle: 'vara-c', hex: makeHex('c3'), count: 2 },
+      ],
+      topCallers: [
+        { handle: 'bot-a', hex: makeHex('d4'), kind: 'Application', count: 5 },
+        { handle: 'bot-b', hex: makeHex('e5'), kind: 'Participant',  count: 3 },
+      ],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    expect(post.body).toContain('12 cross-agent calls');
+    expect(post.body).toContain('@vara-a(6)');
+    expect(post.body).toContain('@vara-b(4)');
+    expect(post.body).toContain('@vara-c(2)');
+    expect(post.body).toContain('21:00 UTC');
+    expect(post.body).toContain('#AAN-TV');
+    expect(post.body).toContain('4.50 VARA');
+    expect(Buffer.byteLength(post.body, 'utf8')).toBeLessThanOrEqual(240);
+  });
+
+  it('empty path: 0 calls → renders "quiet on the network" fallback', () => {
+    const facts: DigestFacts = {
+      hour_label: '03:00 UTC',
+      totalCalls: 0,
+      paidCalls: 0,
+      valueVara: 0,
+      topCallees: [],
+      topCallers: [],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    expect(post.body).toContain('quiet on the network');
+    expect(post.body).toContain('#AAN-TV');
+    expect(post.mentions).toHaveLength(0);
+    expect(Buffer.byteLength(post.body, 'utf8')).toBeLessThanOrEqual(240);
+  });
+
+  it('truncation: many long handles still fit in 240 bytes', () => {
+    // Build 3 callees with very long handles
+    const facts: DigestFacts = {
+      hour_label: '12:00 UTC',
+      totalCalls: 50,
+      paidCalls: 0,
+      valueVara: 0,
+      topCallees: [
+        { handle: 'a-very-long-handle-name-that-pushes-limits', hex: makeHex('f1'), count: 20 },
+        { handle: 'another-extremely-verbose-handle-name-here', hex: makeHex('f2'), count: 18 },
+        { handle: 'yet-another-quite-wordy-handle-for-testing', hex: makeHex('f3'), count: 12 },
+      ],
+      topCallers: [
+        { handle: 'super-long-caller-handle-name-extended', hex: makeHex('g1'), kind: 'Application', count: 10 },
+        { handle: 'another-long-caller-name-for-test-case', hex: makeHex('g2'), kind: 'Participant', count: 5 },
+      ],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    expect(Buffer.byteLength(post.body, 'utf8')).toBeLessThanOrEqual(240);
+    expect(post.body).toContain('#AAN-TV');
+    expect(post.body).toContain('50 cross-agent calls');
+  });
+
+  it('mention dedup: same hex in both top-callees and top-callers → only one entry', () => {
+    const sharedHex = makeHex('aa');
+    const facts: DigestFacts = {
+      hour_label: '08:00 UTC',
+      totalCalls: 5,
+      paidCalls: 0,
+      valueVara: 0,
+      topCallees: [
+        { handle: 'shared-app', hex: sharedHex, count: 3 },
+      ],
+      topCallers: [
+        // same hex — should dedup in mentions
+        { handle: 'shared-app', hex: sharedHex, kind: 'Application', count: 2 },
+      ],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    const hexSet = new Set(post.mentions.map((m) => m.hex.toLowerCase()));
+    expect(post.mentions.length).toBe(hexSet.size); // no duplicates
+    expect(post.mentions.length).toBe(1);
+  });
+
+  it('mention count never exceeds 8', () => {
+    const facts: DigestFacts = {
+      hour_label: '15:00 UTC',
+      totalCalls: 30,
+      paidCalls: 0,
+      valueVara: 0,
+      topCallees: [
+        { handle: 'app1', hex: makeHex('01'), count: 10 },
+        { handle: 'app2', hex: makeHex('02'), count: 8 },
+        { handle: 'app3', hex: makeHex('03'), count: 6 },
+      ],
+      topCallers: [
+        { handle: 'caller1', hex: makeHex('04'), kind: 'Application', count: 5 },
+        { handle: 'caller2', hex: makeHex('05'), kind: 'Participant', count: 3 },
+      ],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    expect(post.mentions.length).toBeLessThanOrEqual(8);
+    expect(Buffer.byteLength(post.body, 'utf8')).toBeLessThanOrEqual(240);
+  });
+
+  it('no value clause when paidCalls is 0', () => {
+    const facts: DigestFacts = {
+      hour_label: '10:00 UTC',
+      totalCalls: 8,
+      paidCalls: 0,
+      valueVara: 0,
+      topCallees: [{ handle: 'varabridge', hex: makeHex('aa'), count: 8 }],
+      topCallers: [],
+    };
+    const post = narrateHourlyDigest(facts);
+
+    expect(post.body).not.toContain('VARA flow');
+    expect(post.body).not.toContain('paid calls');
+    expect(Buffer.byteLength(post.body, 'utf8')).toBeLessThanOrEqual(240);
   });
 });
 
