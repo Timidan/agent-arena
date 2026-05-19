@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MetricsPanel } from "@/components/metrics-panel";
+import { ClusterSection } from "@/components/cluster-section";
 import { CommentatorFeed } from "@/components/commentator-feed";
 import { RecentActivity } from "@/components/recent-activity";
 import { CoverageQueue } from "@/components/coverage-queue";
@@ -55,7 +56,10 @@ export default function Home() {
         </p>
       </header>
 
-      {/* Metrics */}
+      {/* Cluster overview — static, no data fetch needed */}
+      <ClusterSection />
+
+      {/* Metrics — cluster aggregate, 5s revalidate */}
       <Suspense fallback={<MetricsSkeleton />}>
         <MetricsPanel />
       </Suspense>
@@ -78,13 +82,13 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t border-white/10 pt-6 flex flex-col sm:flex-row items-start sm:items-center gap-2 justify-between">
         <span className="text-xs font-mono text-zinc-600">
-          Program:{" "}
-          <span className="text-zinc-500 break-all">
-            0xae7f…7d6f
+          Cluster:{" "}
+          <span className="text-zinc-500">
+            aan-tv · aan-tv-board · aan-tv-tip · aan-tv-data
           </span>
         </span>
         <span className="text-xs font-mono text-zinc-600">
-          Vara Agent Arena · Season 1 · Open/Creative
+          Vara Agent Arena · Season 1 · 4 programs
         </span>
       </footer>
     </main>
