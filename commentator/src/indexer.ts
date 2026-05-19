@@ -314,6 +314,171 @@ export async function resolveHandle(hex: string): Promise<string | null> {
   return result?.handle ?? null;
 }
 
+// ── fetchDigestData ───────────────────────────────────────────────────
+
+export interface DigestBucket {
+  totalCalls: number;
+  paidCalls: number;
+  valueRawSum: bigint;
+  byCallee: Map<string, { handle: string | null; hex: string; count: number }>;
+  byCaller: Map<string, { handle: string | null; hex: string; kind: string; count: number }>;
+}
+
+/**
+ * Fetch all interactions in the last `windowMs` milliseconds that touch
+ * allowlisted callees (by hex or handle).  We compute the since-block from
+ * the chain tip using an estimated 3 s/block production rate, then fetch
+ * interactions and filter client-side to the allowlist.
+ *
+ * @param callees  { hexes, handles } — the callee allowlist (same as watcher)
+ * @param windowMs duration to look back (default: 1 hour = 3 600 000 ms)
+ */
+export async function fetchDigestData(
+  callees: { hexes: string[]; handles: string[] },
+  windowMs = 3_600_000,
+): Promise<DigestBucket> {
+  // Estimate since-block: 3 s per block → 1 200 blocks per hour
+  const blocksBack = Math.ceil(windowMs / 3_000);
+  const tip = await fetchChainTipBlock();
+  const sinceBlock = Math.max(0, tip - blocksBack);
+
+  // Fetch all interactions in that window (no limit — page through all)
+  const allInteractions: Interaction[] = [];
+  let after: string | null = null;
+
+  const DIGEST_QUERY = gql`
+    query DigestSince($sinceBlock: Int!, $limit: Int!, $after: Cursor) {
+      allInteractions(
+        first: $limit,
+        after: $after,
+        orderBy: SUBSTRATE_BLOCK_NUMBER_ASC,
+        filter: { substrateBlockNumber: { greaterThan: $sinceBlock } }
+      ) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          substrateBlockNumber
+          caller
+          callerHandle
+          callerKind
+          callee
+          calleeHandle
+          method
+          valuePaidRaw
+        }
+      }
+    }
+  `;
+
+  type DigestQueryResult = {
+    allInteractions: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: {
+        id: string;
+        substrateBlockNumber: number;
+        caller: string;
+        callerHandle: string | null;
+        callerKind: string;
+        callee: string;
+        calleeHandle: string | null;
+        method: string | null;
+        valuePaidRaw: string | null;
+      }[];
+    };
+  };
+
+  do {
+    const data: DigestQueryResult = await client().request<DigestQueryResult>(
+      DIGEST_QUERY,
+      { sinceBlock, limit: 500, after },
+    );
+    allInteractions.push(
+      ...data.allInteractions.nodes.map((n) => ({
+        id: n.id,
+        blockNumber: Number(n.substrateBlockNumber),
+        caller: n.caller,
+        callerHandle: n.callerHandle ?? null,
+        callerKind: n.callerKind,
+        callee: n.callee,
+        calleeHandle: n.calleeHandle ?? null,
+        method: n.method ?? null,
+        valuePaidRaw: n.valuePaidRaw ?? null,
+      })),
+    );
+    after = data.allInteractions.pageInfo.hasNextPage
+      ? data.allInteractions.pageInfo.endCursor
+      : null;
+  } while (after);
+
+  // Build allowlist sets for fast lookup
+  const calleeHexSet = new Set(callees.hexes.map((h) => h.toLowerCase()));
+  const calleeHandleSet = new Set(callees.handles);
+
+  const bucket: DigestBucket = {
+    totalCalls: 0,
+    paidCalls: 0,
+    valueRawSum: 0n,
+    byCallee: new Map(),
+    byCaller: new Map(),
+  };
+
+  for (const ix of allInteractions) {
+    const calleeHexLower = ix.callee.toLowerCase();
+    const inAllowlist =
+      calleeHexSet.has(calleeHexLower) ||
+      (ix.calleeHandle != null && calleeHandleSet.has(ix.calleeHandle));
+
+    if (!inAllowlist) continue;
+
+    bucket.totalCalls++;
+
+    // Value accounting
+    if (ix.valuePaidRaw && ix.valuePaidRaw !== '0') {
+      try {
+        const raw = BigInt(ix.valuePaidRaw);
+        if (raw > 0n) {
+          bucket.paidCalls++;
+          bucket.valueRawSum += raw;
+        }
+      } catch {
+        // ignore parse failures
+      }
+    }
+
+    // By-callee aggregation
+    const calleeKey = calleeHexLower;
+    const existing = bucket.byCallee.get(calleeKey);
+    if (existing) {
+      existing.count++;
+    } else {
+      bucket.byCallee.set(calleeKey, {
+        handle: ix.calleeHandle,
+        hex: ix.callee,
+        count: 1,
+      });
+    }
+
+    // By-caller aggregation
+    const callerKey = ix.caller.toLowerCase();
+    const existingCaller = bucket.byCaller.get(callerKey);
+    if (existingCaller) {
+      existingCaller.count++;
+    } else {
+      bucket.byCaller.set(callerKey, {
+        handle: ix.callerHandle,
+        hex: ix.caller,
+        kind: ix.callerKind,
+        count: 1,
+      });
+    }
+  }
+
+  return bucket;
+}
+
 // ── fetchAppMetric ────────────────────────────────────────────────────────
 
 const APP_METRIC_QUERY = gql`
