@@ -4,8 +4,9 @@
  * Two bookmarks:
  *   lastSeenBlock      — highest Substrate block number processed by watcher
  *   lastSeenCoverageId — highest CoverageRequest id processed from GetCoverageQueue
+ *   last_digest_ts     — unix ms timestamp of the last hourly digest post
  *
- * Both start at 0. The store is lazily initialized on first access.
+ * All start at 0. The store is lazily initialized on first access.
  *
  * Dedup table:
  *   processed_interactions — per-interaction idempotency record. Written BEFORE
@@ -118,4 +119,21 @@ export function recordFailed(interactionId: string, error: string): void {
        ON CONFLICT(id) DO NOTHING`,
     )
     .run(interactionId, error);
+}
+
+// ── hourly digest timestamp bookmark ──────────────────────────────────────
+
+/**
+ * Returns the unix timestamp (ms) of the last hourly digest post.
+ * Returns 0 if never set (fresh DB).
+ */
+export function getLastDigestPostedAt(): number {
+  return parseInt(getCheckpoint('last_digest_ts', '0'), 10);
+}
+
+/**
+ * Persist the unix timestamp (ms) of the most recent hourly digest post.
+ */
+export function setLastDigestPostedAt(ms: number): void {
+  setCheckpoint('last_digest_ts', String(ms));
 }
