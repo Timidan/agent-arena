@@ -17,6 +17,7 @@ import {
   fetchInteractionsSinceBlock,
   fetchChainTipBlock,
   fetchCoverageQueue,
+  fetchDigestData,
   resolveHandle,
   type Interaction,
 } from './indexer.js';
@@ -28,6 +29,8 @@ import {
   alreadyProcessed,
   recordProcessed,
   recordFailed,
+  getLastDigestPostedAt,
+  setLastDigestPostedAt,
 } from './checkpoint.js';
 import { postChatAsApplication, markCovered } from './chat.js';
 import { ensureFresh } from './voucher.js';
@@ -38,7 +41,9 @@ import {
   narrateMatchSettled,
   narrateCustom,
   narrateActivity,
+  narrateHourlyDigest,
   type NarratedPost,
+  type DigestFacts,
 } from './narrator.js';
 
 // ── interesting-event allowlist ─────────────────────────────────────────────
@@ -62,6 +67,30 @@ interface InterestingFilter {
   kind: NarrationKind;
 }
 
+// ── Our AAN-TV cluster hexes (INBOUND calls to these always narrate per-event)
+// Includes APP_HEX (aan-tv) plus the three cluster programs.
+// Used for both the allowlist and for the per-event throttle decision.
+const CLUSTER_HEXES_STATIC = [
+  '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d', // aan-tv-board
+  '0x8ee1131a13a3c5857430cadcab9b4432ff5387afbcb113e80fc92ef6a3461a02', // aan-tv-tip
+  '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c', // aan-tv-data
+];
+
+// All allowlisted handles (for fetchDigestData)
+const ALLOWLIST_HANDLES = [
+  'vara-agents',
+  'varapulse',
+  'varabridge',
+  'varaflow-org',
+  'infinite-bounty-v3',
+  'zeeast-casino',
+  'skopos-bridge',
+  'hy4-predict-app',
+  'hy4-game-app',
+  'thebookdex',
+  'agent-tic-tac-toe',
+];
+
 // NOTE: the live indexer schema does NOT expose `method` on Interaction (always null).
 // We can only filter by callee, not by method. Anything matching here is narrated as
 // the kind below; for the generic `Activity` kind we just say "X interacted with Y".
@@ -69,9 +98,9 @@ const INTERESTING_FILTERS: InterestingFilter[] = [
   // Our own AAN-TV program — any call to us is worth narrating
   { hex: '__OWN__',  kind: 'Activity' },
   // Our cluster apps (deployed 2026-05-19) — calls to ANY of these get covered
-  { hex: '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d', kind: 'Activity' }, // aan-tv-board
-  { hex: '0x8ee1131a13a3c5857430cadcab9b4432ff5387afbcb113e80fc92ef6a3461a02', kind: 'Activity' }, // aan-tv-tip
-  { hex: '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c', kind: 'Activity' }, // aan-tv-data
+  { hex: CLUSTER_HEXES_STATIC[0], kind: 'Activity' }, // aan-tv-board
+  { hex: CLUSTER_HEXES_STATIC[1], kind: 'Activity' }, // aan-tv-tip
+  { hex: CLUSTER_HEXES_STATIC[2], kind: 'Activity' }, // aan-tv-data
   // NOTE: __PID__ (vara-agents network program) removed per codex pre-deploy review —
   // matched EVERY chat/board/register call across the network, drowning chat with
   // @infinitebuilder narrations and diluting our signal. Focus on app-level activity.
@@ -90,10 +119,81 @@ const INTERESTING_FILTERS: InterestingFilter[] = [
   { handle: 'agent-tic-tac-toe', kind: 'Activity' },
 ];
 
+// Threshold for "high-value" per-event narration: 1 VARA in plancks
+const HIGH_VALUE_THRESHOLD_RAW = 1_000_000_000_000n;
+
 function resolveHexSentinel(raw: string): string {
   if (raw === '__OWN__') return process.env.APP_HEX ?? '';
   if (raw === '__PID__') return process.env.PID ?? '';
   return raw;
+}
+
+/**
+ * Returns the full set of cluster callee hexes (AAN-TV + board + tip + data).
+ * Computed at call time so APP_HEX is resolved from env (set by boot time).
+ */
+function getClusterHexes(): string[] {
+  const appHex = process.env.APP_HEX ?? '';
+  return [appHex, ...CLUSTER_HEXES_STATIC].filter(Boolean).map((h) => h.toLowerCase());
+}
+
+/**
+ * Returns true if this interaction's callee is one of our cluster programs.
+ * Inbound calls to our cluster are always narrated per-event.
+ */
+function isClusterCallee(interaction: Interaction): boolean {
+  return getClusterHexes().includes(interaction.callee.toLowerCase());
+}
+
+/**
+ * Returns true if this interaction has a value paid >= 1 VARA.
+ */
+function isHighValue(interaction: Interaction): boolean {
+  if (!interaction.valuePaidRaw || interaction.valuePaidRaw === '0') return false;
+  try {
+    return BigInt(interaction.valuePaidRaw) >= HIGH_VALUE_THRESHOLD_RAW;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a DigestFacts object from raw bucket data for use in narrateHourlyDigest.
+ */
+function buildDigestFacts(
+  bucket: Awaited<ReturnType<typeof fetchDigestData>>,
+): DigestFacts {
+  const now = new Date();
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mm = String(now.getUTCMinutes()).padStart(2, '0');
+  const hour_label = `${hh}:${mm} UTC`;
+
+  // Sort by count desc, take top N
+  const topCallees = [...bucket.byCallee.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map((c) => ({ handle: c.handle ?? c.hex.slice(0, 8) + '…', hex: c.hex, count: c.count }));
+
+  const topCallers = [...bucket.byCaller.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 2)
+    .map((c) => ({
+      handle: c.handle ?? c.hex.slice(0, 8) + '…',
+      hex: c.hex,
+      kind: (c.kind === 'Application' ? 'Application' : 'Participant') as 'Application' | 'Participant',
+      count: c.count,
+    }));
+
+  const valueVara = Number(bucket.valueRawSum) / 1e12;
+
+  return {
+    hour_label,
+    totalCalls: bucket.totalCalls,
+    paidCalls: bucket.paidCalls,
+    valueVara,
+    topCallees,
+    topCallers,
+  };
 }
 
 /** Returns a display handle: pre-resolved handle or truncated hex fallback */
@@ -294,6 +394,18 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
     }
   }
 
+  // Digest boot-time guard — if last_digest_ts is 0 or stale (> 24 h), set to
+  // now so the first digest fires 60 min from boot, not immediately.
+  {
+    const lastDigest = getLastDigestPostedAt();
+    const now = Date.now();
+    const H24 = 24 * 3600_000;
+    if (lastDigest === 0 || now - lastDigest > H24) {
+      setLastDigestPostedAt(now);
+      console.log('[aan-tv] digest boot-guard: first digest will fire in ~60 min');
+    }
+  }
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const loopStart = Date.now();
@@ -344,27 +456,39 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
           continue;
         }
 
-        // Organic narration of interesting activity on known apps
+        // Organic narration of interesting activity on known apps.
+        // Per-event throttle: only narrate cluster-inbound or high-value calls.
+        // Everything else is counted in the hourly digest instead.
         const kind = looksInteresting(interaction);
         if (kind) {
-          console.log(
-            `[aan-tv] Interesting interaction: ${interaction.method ?? '?'} on ${interaction.callee.slice(0, 16)}… kind=${kind}`,
-          );
+          const shouldNarrateNow = isClusterCallee(interaction) || isHighValue(interaction);
 
-          try {
-            const post = await narrateInteraction(interaction, kind);
-            if (post) {
-              const result = await postChatAsApplication(post);
-              console.log(
-                `[aan-tv] Organic narration posted: msgId=${result.msgId} kind=${kind}`,
-              );
-              recordProcessed(interaction.id, result.msgId, result.txHash);
-            } else {
-              recordFailed(interaction.id, 'no narration template matched');
+          if (shouldNarrateNow) {
+            console.log(
+              `[aan-tv] Interesting interaction (per-event): ${interaction.method ?? '?'} on ${interaction.callee.slice(0, 16)}… kind=${kind}`,
+            );
+
+            try {
+              const post = await narrateInteraction(interaction, kind);
+              if (post) {
+                const result = await postChatAsApplication(post);
+                console.log(
+                  `[aan-tv] Organic narration posted: msgId=${result.msgId} kind=${kind}`,
+                );
+                recordProcessed(interaction.id, result.msgId, result.txHash);
+              } else {
+                recordFailed(interaction.id, 'no narration template matched');
+              }
+            } catch (err) {
+              console.error('[aan-tv] Failed to post organic narration:', err);
+              recordFailed(interaction.id, String(err));
             }
-          } catch (err) {
-            console.error('[aan-tv] Failed to post organic narration:', err);
-            recordFailed(interaction.id, String(err));
+          } else {
+            // Suppress per-event — will appear in hourly digest aggregate
+            console.log(
+              `[aan-tv] Interesting but suppressed (digest-only): ${interaction.callee.slice(0, 16)}… kind=${kind}`,
+            );
+            recordProcessed(interaction.id, '', '');
           }
         } else {
           recordFailed(interaction.id, 'not-interesting: skipped');
@@ -376,11 +500,36 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
         setLastSeenBlock(maxBlock);
         console.log(`[aan-tv] Checkpoint advanced to block ${maxBlock}`);
       }
+
+      // 5. Hourly digest — fire if >= 60 min have elapsed since last post.
+      const digestNow = Date.now();
+      const lastDigest = getLastDigestPostedAt();
+      const DIGEST_INTERVAL_MS = 60 * 60_000; // 60 minutes
+      if (digestNow - lastDigest >= DIGEST_INTERVAL_MS) {
+        console.log('[aan-tv] Hourly digest: building…');
+        try {
+          const appHex = process.env.APP_HEX ?? '';
+          const digestCalleeHexes = [appHex, ...CLUSTER_HEXES_STATIC].filter(Boolean);
+          const bucket = await fetchDigestData(
+            { hexes: digestCalleeHexes, handles: ALLOWLIST_HANDLES },
+            DIGEST_INTERVAL_MS,
+          );
+          const facts = buildDigestFacts(bucket);
+          const post = narrateHourlyDigest(facts);
+          console.log(`[aan-tv] Hourly digest body: ${post.body.slice(0, 80)}…`);
+          const result = await postChatAsApplication(post);
+          console.log(`[aan-tv] Hourly digest posted: msgId=${result.msgId} txHash=${result.txHash}`);
+          setLastDigestPostedAt(digestNow);
+        } catch (err) {
+          console.error('[aan-tv] Hourly digest failed (will retry next tick):', err);
+          // Do NOT update setLastDigestPostedAt — retry next poll cycle
+        }
+      }
     } catch (err) {
       console.error('[aan-tv] Loop error (will retry):', err);
     }
 
-    // 5. Sleep
+    // 6. Sleep
     const elapsed = Date.now() - loopStart;
     const sleepMs = Math.max(0, opts.intervalMs - elapsed);
     console.log(`[aan-tv] Sleeping ${sleepMs}ms`);
