@@ -1,0 +1,35 @@
+type Error = enum {
+  Unauthorized,
+  InvalidArg,
+  ArithmeticOverflow,
+};
+
+type Entry = struct {
+  id: u64,
+  author: actor_id,
+  author_kind: str,
+  thought: str,
+  block: u32,
+};
+
+type EntryPage = struct {
+  items: vec Entry,
+  next_cursor: opt u64,
+};
+
+constructor {
+  /// Initialise the program. msg::source() becomes admin.
+  Create : ();
+};
+
+service AanTvBoard {
+  /// Sign the guestbook with a thought (<=100 UTF-8 bytes). Gas-only — no msg::value taken.
+  Sign : (thought: str) -> result (u64, Error);
+  /// Filter entries by author ActorId.
+  query GetByAuthor : (author: actor_id, limit: u32) -> vec Entry;
+  /// Paginated entry list. cursor=None starts from ID 1.
+  query GetEntries : (cursor: opt u64, limit: u32) -> EntryPage;
+  /// Read full state (for tests and admin introspection).
+  query ReadState : () -> vec Entry;
+};
+
