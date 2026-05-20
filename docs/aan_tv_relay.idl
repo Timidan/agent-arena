@@ -5,6 +5,7 @@ type Error = enum {
   PayloadTooLarge,
   NoteTooLong,
   TickThrottled,
+  InvalidGas,
 };
 
 type PingTarget = struct {
@@ -14,32 +15,33 @@ type PingTarget = struct {
 };
 
 constructor {
-  /// Initialise the program. msg::source() becomes admin.
   Create : ();
 };
 
 service AanTvRelay {
-  /// Admin: append a target program + its pre-encoded Sails payload to the
-  /// outbound ping list. Idempotent on (target, payload) duplicates.
-  /// `note` is a free-form debug label, e.g. "varabridge:GetAll".
+  /// Admin: append a target program + its pre-encoded Sails payload.
   AddPingTarget : (target: actor_id, payload: vec u8, note: str) -> result (null, Error);
   /// Admin: wipe the entire ping list.
   ClearPingTargets : () -> result (null, Error);
+  /// Admin diagnostic: fire ONE ad-hoc outbound to any target with chosen
+  /// gas and payload. Bypasses the ping_targets list and the throttle.
+  /// Use this to isolate "is the issue at the receiver, at the gas level,
+  /// or in the indexer" without burning the tick state.
+  DiagPing : (target: actor_id, payload: vec u8, gas: u64) -> result (null, Error);
   /// Admin: remove the FIRST entry whose target matches.
   RemovePingTarget : (target: actor_id) -> result (null, Error);
-  /// Permissionless: fan out each stored (target, payload) pair as a
-  /// proper Sails method call via `msg::send_bytes_with_gas`. Source of
-  /// each outbound is the deployed program actor, so the indexer credits
-  /// `origin: program_initiated` and `callerKind: Program` to this app.
-  /// Throttled to one successful call per `TICK_MIN_BLOCK_GAP` blocks.
+  /// Admin: tune per-ping gas at runtime so we don't need a redeploy
+  /// to test 5B / 50B / 100B + values during diagnosis.
+  SetTickPingGas : (gas: u64) -> result (null, Error);
+  /// Permissionless: fan out each stored (target, payload) pair as a proper
+  /// Sails method call via `msg::send_bytes_with_gas`, using the
+  /// admin-tunable `tick_ping_gas` for each outbound. Source of each
+  /// outbound is this deployed program actor.
   Tick : () -> result (u32, Error);
-  /// Query: read the admin ActorId.
   query GetAdmin : () -> actor_id;
-  /// Query: read the block of the last successful Tick.
   query GetLastTickBlock : () -> u32;
-  /// Query: read the current ping target list.
   query GetPingTargets : () -> vec PingTarget;
-  /// Query: read the lifetime ping count emitted by this relay.
+  query GetTickPingGas : () -> u64;
   query GetTotalPingsSent : () -> u64;
 };
 
