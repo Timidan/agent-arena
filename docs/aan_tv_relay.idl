@@ -2,7 +2,15 @@ type Error = enum {
   Unauthorized,
   TooManyPingTargets,
   PingTargetNotFound,
+  PayloadTooLarge,
+  NoteTooLong,
   TickThrottled,
+};
+
+type PingTarget = struct {
+  target: actor_id,
+  payload: vec u8,
+  note: str,
 };
 
 constructor {
@@ -11,23 +19,26 @@ constructor {
 };
 
 service AanTvRelay {
-  /// Admin: append a program ActorId to the outbound ping list.
-  /// Idempotent: duplicate targets are a no-op.
-  AddPingTarget : (target: actor_id) -> result (null, Error);
-  /// Admin: remove a target from the outbound ping list.
+  /// Admin: append a target program + its pre-encoded Sails payload to the
+  /// outbound ping list. Idempotent on (target, payload) duplicates.
+  /// `note` is a free-form debug label, e.g. "varabridge:GetAll".
+  AddPingTarget : (target: actor_id, payload: vec u8, note: str) -> result (null, Error);
+  /// Admin: wipe the entire ping list.
+  ClearPingTargets : () -> result (null, Error);
+  /// Admin: remove the FIRST entry whose target matches.
   RemovePingTarget : (target: actor_id) -> result (null, Error);
-  /// Permissionless: fan out a zero-value heartbeat to every target.
+  /// Permissionless: fan out each stored (target, payload) pair as a
+  /// proper Sails method call via `msg::send_bytes_with_gas`. Source of
+  /// each outbound is the deployed program actor, so the indexer credits
+  /// `origin: program_initiated` and `callerKind: Program` to this app.
   /// Throttled to one successful call per `TICK_MIN_BLOCK_GAP` blocks.
-  /// Each outbound is sent FROM this program actor, so the indexer
-  /// attributes the call as `origin: program_initiated` to the relay's
-  /// appMetric. Returns the number of targets pinged on success.
   Tick : () -> result (u32, Error);
   /// Query: read the admin ActorId.
   query GetAdmin : () -> actor_id;
   /// Query: read the block of the last successful Tick.
   query GetLastTickBlock : () -> u32;
   /// Query: read the current ping target list.
-  query GetPingTargets : () -> vec actor_id;
+  query GetPingTargets : () -> vec PingTarget;
   /// Query: read the lifetime ping count emitted by this relay.
   query GetTotalPingsSent : () -> u64;
 };

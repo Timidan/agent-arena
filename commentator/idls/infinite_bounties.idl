@@ -1,0 +1,101 @@
+type BountyPage = struct {
+  bounties: vec Bounty,
+};
+
+type Bounty = struct {
+  id: u64,
+  creator: actor_id,
+  description: str,
+  metadata_url: str,
+  reward: u128,
+  status: BountyStatus,
+  claimant: opt actor_id,
+  proof_url: opt str,
+  created_at: u64,
+};
+
+type BountyStatus = enum {
+  Open,
+  Claimed,
+  Submitted,
+  Approved,
+  Cancelled,
+};
+
+type Config = struct {
+  admin: actor_id,
+  fee: u128,
+  bounty_count: u64,
+};
+
+constructor {
+  New : (admin: actor_id, fee: u128);
+};
+
+service BountyBoard {
+  /// Approve submitted work. Releases the reward to the claimant.
+  ApproveBounty : (bounty_id: u64) -> null;
+  /// Cancel an open (unclaimed) bounty. Reward is returned to creator.
+  CancelBounty : (bounty_id: u64) -> null;
+  /// Claim an open bounty. Caller becomes the claimant.
+  ClaimBounty : (bounty_id: u64) -> null;
+  /// Import state from a previous program. Admin only.
+  /// Overwrites ALL current state with the imported data.
+  ImportState : (encoded_state: vec u8) -> null;
+  /// Post a new bounty. Requires msg::value() >= fee + reward.
+  /// fee is collected by the contract, reward is locked for the claimant.
+  PostBounty : (description: str, metadata_url: str) -> u64;
+  /// Set the service fee. Admin only.
+  SetFee : (new_fee: u128) -> null;
+  /// Submit proof of work for a claimed bounty.
+  SubmitWork : (bounty_id: u64, proof_url: str) -> null;
+  /// Withdraw accumulated fees to admin. Admin only.
+  WithdrawFees : () -> null;
+  /// Export all state for migration to a new program. Admin only.
+  query ExportState : () -> vec u8;
+  /// Get all bounties created by a specific wallet, with pagination.
+  query GetBountiesByCreator : (creator: actor_id, cursor: opt u64, limit: u32) -> BountyPage;
+  /// Get all bounties in a given status, with pagination.
+  query GetBountiesByStatus : (status: BountyStatus, cursor: opt u64, limit: u32) -> BountyPage;
+  /// Get bounty details by ID.
+  query GetBounty : (id: u64) -> opt Bounty;
+  /// Get service config (admin, fee, bounty count).
+  query GetConfig : () -> Config;
+
+  events {
+    BountyPosted: struct {
+      id: u64,
+      creator: actor_id,
+      description: str,
+      reward: u128,
+      fee_paid: u128,
+    };
+    BountyClaimed: struct {
+      id: u64,
+      claimant: actor_id,
+    };
+    WorkSubmitted: struct {
+      id: u64,
+      proof_url: str,
+    };
+    BountyApproved: struct {
+      id: u64,
+      reward: u128,
+      creator: actor_id,
+      claimant: actor_id,
+    };
+    BountyCancelled: struct {
+      id: u64,
+      reward_returned: u128,
+    };
+    FeeUpdated: struct {
+      old_fee: u128,
+      new_fee: u128,
+    };
+    FeesWithdrawn: struct {
+      amount: u128,
+      to: actor_id,
+    };
+  }
+};
+

@@ -1,0 +1,176 @@
+type ContractError = enum {
+  NotAuthorized,
+  NotAdmin,
+  BadParams,
+  JoinFirst,
+  InsufficientUsd,
+  InsufficientAsset,
+  OrderNotFound,
+  OrderAlreadyDone,
+  NoLiquidity,
+  NoBuyers,
+  PoolExists,
+  PoolNotFound,
+  SameAssetPool,
+  InsufficientLiquidity,
+  SlippageExceeded,
+  ZeroAmount,
+  AgentCallFailed,
+};
+
+type PriceFeed = struct {
+  symbol: str,
+  price_usd_micro: u64,
+  change_24h_bps: i32,
+  market_cap_usd: u64,
+  volume_24h_usd: u64,
+  updated_at_block: u32,
+};
+
+type Asset = enum {
+  BTC,
+  ETH,
+  VARA,
+};
+
+type Side = enum {
+  Buy,
+  Sell,
+};
+
+type LeaderEntry = struct {
+  id: actor_id,
+  usd: u64,
+  net_worth: u64,
+};
+
+type OrderStatus = enum {
+  Open,
+  Partial,
+  Filled,
+  Cancelled,
+};
+
+type OrderPlacedEvent = struct {
+  trader: actor_id,
+  side: Side,
+  asset: Asset,
+  price: u64,
+  qty: u64,
+  order_id: u64,
+};
+
+type OrderCancelledEvent = struct {
+  trader: actor_id,
+  order_id: u64,
+};
+
+type TradeEvent = struct {
+  trade_id: u64,
+  asset: Asset,
+  price: u64,
+  qty: u64,
+  buyer: actor_id,
+  seller: actor_id,
+};
+
+type LpPosition = struct {
+  pool_id: u64,
+  provider: actor_id,
+  amount: u64,
+  share_a: u64,
+  share_b: u64,
+};
+
+type Pool = struct {
+  id: u64,
+  asset_a: Asset,
+  asset_b: Asset,
+  reserve_a: u64,
+  reserve_b: u64,
+  total_lp: u64,
+  creator: actor_id,
+};
+
+type PoolCreatedEvent = struct {
+  pool_id: u64,
+  asset_a: Asset,
+  asset_b: Asset,
+  creator: actor_id,
+};
+
+type LiquidityAddedEvent = struct {
+  pool_id: u64,
+  provider: actor_id,
+  amount_a: u64,
+  amount_b: u64,
+  lp_minted: u64,
+};
+
+type LiquidityRemovedEvent = struct {
+  pool_id: u64,
+  provider: actor_id,
+  amount_a: u64,
+  amount_b: u64,
+  lp_burned: u64,
+};
+
+type SwapExecutedEvent = struct {
+  pool_id: u64,
+  trader: actor_id,
+  asset_in: Asset,
+  amount_in: u64,
+  asset_out: Asset,
+  amount_out: u64,
+  fee: u64,
+};
+
+constructor {
+  New : ();
+};
+
+service Orderbook {
+  CallAgentService : (target: actor_id, payload: vec u8, gas_limit: u64) -> result (vec u8, ContractError);
+  CancelOrder : (oid: u64) -> result (null, ContractError);
+  Challenge : (opponent: actor_id, amount: u64) -> result (u32, ContractError);
+  GetLivePrice : (symbol: str) -> result (PriceFeed, ContractError);
+  Join : () -> struct { u64, u64, u64, u64 };
+  MarketBuy : (asset: Asset, qty: u64) -> result (str, ContractError);
+  MarketSell : (asset: Asset, qty: u64) -> result (str, ContractError);
+  PlaceLimit : (side: Side, asset: Asset, price: u64, qty: u64) -> result (u64, ContractError);
+  PushOracleData : (oracle: actor_id, data: u64) -> null;
+  SignalCollab : (partner: actor_id, _note: str) -> null;
+  StartAutopilot : () -> null;
+  SubscribeOracle : (oracle: actor_id, label: str) -> null;
+  Tick : () -> result (str, ContractError);
+  query GetLeaderboard : (limit: u32) -> vec LeaderEntry;
+  query GetMyOrders : () -> vec struct { u64, Side, Asset, u64, u64, u64, OrderStatus };
+  query GetOrderbook : (asset: Asset) -> struct { vec struct { u64, u64 }, vec struct { u64, u64 } };
+  query GetPortfolio : () -> struct { u64, u64, u64, u64 };
+  query GetStatus : () -> struct { u32, u64, u32, bool, u32, u32 };
+  query GetTrades : (asset: Asset, limit: u32) -> vec struct { u64, u64, u64, actor_id, actor_id };
+
+  events {
+    OrderPlaced: OrderPlacedEvent;
+    OrderCancelled: OrderCancelledEvent;
+    Trade: TradeEvent;
+  }
+};
+
+service Amm {
+  AddLiquidity : (pool_id: u64, amount_a: u64, amount_b: u64) -> result (u64, ContractError);
+  CreatePool : (asset_a: Asset, asset_b: Asset) -> result (u64, ContractError);
+  RemoveLiquidity : (pool_id: u64, lp_amount: u64) -> result (struct { u64, u64 }, ContractError);
+  Swap : (pool_id: u64, asset_in: Asset, amount_in: u64, min_amount_out: u64) -> result (u64, ContractError);
+  query GetLpPosition : (pool_id: u64, provider: actor_id) -> opt LpPosition;
+  query GetPool : (pool_id: u64) -> opt Pool;
+  query ListPools : () -> vec Pool;
+
+  events {
+    PoolCreated: PoolCreatedEvent;
+    LiquidityAdded: LiquidityAddedEvent;
+    LiquidityRemoved: LiquidityRemovedEvent;
+    SwapExecuted: SwapExecutedEvent;
+  }
+};
+

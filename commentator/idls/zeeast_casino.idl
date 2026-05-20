@@ -1,0 +1,411 @@
+type Side = enum {
+  Heads,
+  Tails,
+};
+
+type CoinFlipResult = struct {
+  outcome: Side,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+  streak: u8,
+};
+
+type CasinoError = enum {
+  ContractPaused,
+  InsufficientStake,
+  InvalidInput: str,
+  Unauthorized,
+  DrawNotReady,
+  PoolEmpty,
+  AlreadyCommitted,
+  NoCommitFound,
+  RevealWindowExpired,
+  SelfReferralNotAllowed,
+  ReferrerAlreadySet,
+  NothingToClaim,
+  AlreadyPredicted,
+  PredictionWindowClosed,
+};
+
+type PlayerRecord = struct {
+  total_bets: u64,
+  total_wagered: u128,
+  total_won: u128,
+};
+
+type DiceResult = struct {
+  rolled: u8,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+  streak: u8,
+  challenge_won: bool,
+};
+
+type SlotsResult = struct {
+  reels: [Symbol, 3],
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+  streak: u8,
+  challenge_won: bool,
+};
+
+type Symbol = enum {
+  Seven,
+  Bar,
+  Cherry,
+  Lemon,
+  Bell,
+};
+
+type HiLoChoice = enum {
+  Higher,
+  Lower,
+};
+
+type HiLoResult = struct {
+  number: u8,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type KenoResult = struct {
+  drawn: vec u8,
+  matched: vec u8,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type WheelResult = struct {
+  segment: u8,
+  multiplier_bps: u64,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type CrashResult = struct {
+  crash_point: u64,
+  target: u64,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type Parity = enum {
+  Odd,
+  Even,
+};
+
+type OddEvenResult = struct {
+  number: u64,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type Color = enum {
+  Red,
+  Black,
+  Green,
+};
+
+type ColorBetResult = struct {
+  landed: Color,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+  challenge_won: bool,
+};
+
+type RpsCommitResult = struct {
+  committed: bool,
+  expires_block: u32,
+};
+
+type RpsMove = enum {
+  Rock,
+  Paper,
+  Scissors,
+};
+
+type RpsResult = struct {
+  player_move: RpsMove,
+  opponent_move: RpsMove,
+  outcome: RpsOutcome,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type RpsOutcome = enum {
+  Win,
+  Lose,
+  Draw,
+};
+
+type RpsCommit = struct {
+  commit_hash: [u8, 32],
+  stake: u128,
+  block_committed: u32,
+};
+
+type DuelCommitResult = struct {
+  committed: bool,
+  expires_block: u32,
+};
+
+type DuelResult = struct {
+  player_number: u8,
+  target: u8,
+  won: bool,
+  payout: u128,
+  jackpot_hit: bool,
+  jackpot_payout: u128,
+};
+
+type DuelCommit = struct {
+  commit_hash: [u8, 32],
+  stake: u128,
+  block_committed: u32,
+};
+
+type LotteryDrawResult = struct {
+  winner: actor_id,
+  payout: u128,
+  next_draw_block: u32,
+};
+
+type LotteryEnterResult = struct {
+  ticket_number: u32,
+  current_pot: u128,
+  draw_block: u32,
+};
+
+type LotteryInfo = struct {
+  pot: u128,
+  ticket_count: u32,
+  draw_block: u32,
+  epoch: u32,
+  last_winner: opt actor_id,
+  last_payout: u128,
+};
+
+type RaffleEnterResult = struct {
+  tickets_owned: u32,
+  current_pot: u128,
+  draw_block: u32,
+};
+
+type RaffleDrawResult = struct {
+  winner: actor_id,
+  payout: u128,
+  next_draw_block: u32,
+};
+
+type SettleResult = struct {
+  winners: vec struct { actor_id, u128 },
+  next_reset_block: u32,
+};
+
+type ChallengeInfo = struct {
+  condition: ChallengeCondition,
+  pot: u128,
+  epoch_end_block: u32,
+  claimed: bool,
+  last_winner: opt actor_id,
+  last_payout: u128,
+};
+
+type ChallengeCondition = enum {
+  RollExact: u8,
+  HitTriple: Symbol,
+  WinStreak: u8,
+  HitGreen,
+  CrashOver: u64,
+};
+
+type RegisterResult = struct {
+  registered: bool,
+  referrer: actor_id,
+};
+
+type VipTier = enum {
+  Bronze,
+  Silver,
+  Gold,
+  Platinum,
+};
+
+type TierProgress = struct {
+  current_tier: VipTier,
+  next_tier: opt VipTier,
+  wagered_so_far: u128,
+  wagered_needed: u128,
+};
+
+type TierInfo = struct {
+  tier: VipTier,
+  min_wagered_vara: u128,
+  fee_bps: u16,
+};
+
+type PredictResult = struct {
+  accepted: bool,
+  range: u8,
+  closes_block: u32,
+  current_pot: u128,
+};
+
+type PredictSettleResult = struct {
+  winning_range: u8,
+  winners: vec struct { actor_id, u128 },
+  total_pot: u128,
+};
+
+type PredictionEntry = struct {
+  player: actor_id,
+  range: u8,
+  stake: u128,
+  epoch: u32,
+};
+
+type CasinoConfig = struct {
+  owner: actor_id,
+  paused: bool,
+  jackpot: u128,
+  challenge_pot: u128,
+  house_balance: u128,
+};
+
+constructor {
+  New : (draw_interval: u32, raffle_interval: u32, leaderboard_interval: u32);
+};
+
+service CoinFlip {
+  Play : (guess: Side) -> result (CoinFlipResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Dice {
+  Roll : (guess: u8) -> result (DiceResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Slots {
+  Pull : () -> result (SlotsResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service HiLo {
+  Predict : (prediction: HiLoChoice) -> result (HiLoResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Keno {
+  Pick : (numbers: vec u8) -> result (KenoResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Wheel {
+  Spin : () -> result (WheelResult, CasinoError);
+  query Segments : () -> vec struct { u64, u128 };
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Crash {
+  Play : (target_multiplier: u64) -> result (CrashResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service OddEven {
+  Bet : (choice: Parity) -> result (OddEvenResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service ColorBet {
+  Bet : (color: Color) -> result (ColorBetResult, CasinoError);
+  query Stats : (player: actor_id) -> PlayerRecord;
+};
+
+service Rps {
+  Commit : (hash: [u8, 32]) -> result (RpsCommitResult, CasinoError);
+  ReclaimExpired : () -> result (u128, CasinoError);
+  Reveal : (rps_move: RpsMove, salt: vec u8) -> result (RpsResult, CasinoError);
+  query PendingCommit : (player: actor_id) -> opt RpsCommit;
+};
+
+service NumberDuel {
+  Commit : (hash: [u8, 32]) -> result (DuelCommitResult, CasinoError);
+  Reveal : (number: u8, salt: vec u8) -> result (DuelResult, CasinoError);
+  query PendingCommit : (player: actor_id) -> opt DuelCommit;
+};
+
+service Lottery {
+  Draw : () -> result (LotteryDrawResult, CasinoError);
+  Enter : () -> result (LotteryEnterResult, CasinoError);
+  query Info : () -> LotteryInfo;
+  query MyTickets : (player: actor_id) -> u32;
+};
+
+service Raffle {
+  BuyTickets : (count: u32) -> result (RaffleEnterResult, CasinoError);
+  Draw : () -> result (RaffleDrawResult, CasinoError);
+  query DrawBlock : () -> u32;
+  query MyTickets : (player: actor_id) -> u32;
+  query Pot : () -> u128;
+  query TotalTickets : () -> u32;
+};
+
+service Leaderboard {
+  Settle : () -> result (SettleResult, CasinoError);
+  query PrizePool : () -> u128;
+  query ResetBlock : () -> u32;
+  query TopScores : (game_id: u32) -> vec struct { actor_id, u64 };
+};
+
+service Challenge {
+  RotateEpoch : () -> result (ChallengeInfo, CasinoError);
+  query Current : () -> ChallengeInfo;
+};
+
+service Referral {
+  Claim : () -> result (u128, CasinoError);
+  Register : (referrer: actor_id) -> result (RegisterResult, CasinoError);
+  query MyReferralBalance : (player: actor_id) -> u128;
+  query MyReferrer : (player: actor_id) -> opt actor_id;
+};
+
+service Vip {
+  query MyTier : (player: actor_id) -> VipTier;
+  query TierProgress : (player: actor_id) -> TierProgress;
+  query TierTable : () -> vec TierInfo;
+};
+
+service Prediction {
+  Predict : (range: u8) -> result (PredictResult, CasinoError);
+  Settle : () -> result (PredictSettleResult, CasinoError);
+  query CurrentPot : () -> u128;
+  query MyPrediction : (player: actor_id) -> opt PredictionEntry;
+};
+
+service Admin {
+  SetFeeHackathonOwnerOnly : (fee_bps: u16) -> result (u16, CasinoError);
+  SetPaused : (paused: bool) -> result (bool, CasinoError);
+  WithdrawProfit : (amount: u128) -> result (u128, CasinoError);
+  query Config : () -> CasinoConfig;
+  query HouseBalance : () -> u128;
+  query IsPaused : () -> bool;
+  query JackpotBalance : () -> u128;
+};
+

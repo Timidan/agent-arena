@@ -1,0 +1,110 @@
+type PriceFeed = struct {
+  symbol: str,
+  price_usd_micro: u64,
+  change_24h_bps: i32,
+  market_cap_usd: u64,
+  volume_24h_usd: u64,
+  updated_at_block: u32,
+};
+
+type GasFeed = struct {
+  current_fee_micro: u64,
+  suggested_tip: u64,
+  block_num: u32,
+  finalized_hash: str,
+  updated_at_block: u32,
+};
+
+type NewsSummary = struct {
+  title: str,
+  source: str,
+  published_at: u64,
+  category: str,
+};
+
+type MarketFeed = struct {
+  market_id: str,
+  question: str,
+  yes_prob_bps: u32,
+  volume_usd: u64,
+  closes_at: u64,
+  updated_at_block: u32,
+};
+
+type DatetimeFeed = struct {
+  unix_ts: u64,
+  utc_string: str,
+  day_of_week: str,
+  updated_at_block: u32,
+};
+
+type FullUpdatePayload = struct {
+  prices: opt vec PriceFeed,
+  gas: opt GasFeed,
+  news: opt vec NewsSummary,
+  markets: opt vec MarketFeed,
+  datetime: opt DatetimeFeed,
+};
+
+type QueryRequest = struct {
+  query_type: str,
+  symbol: opt str,
+  keys: opt vec str,
+};
+
+type BridgeSnapshot = struct {
+  prices: vec PriceEntry,
+  gas: GasFeed,
+  news: vec NewsSummary,
+  markets: vec MarketEntry,
+  datetime: DatetimeFeed,
+  block: u32,
+};
+
+type PriceEntry = struct {
+  key: str,
+  value: PriceFeed,
+};
+
+type MarketEntry = struct {
+  key: str,
+  value: MarketFeed,
+};
+
+type BridgeStats = struct {
+  query_count: u64,
+  update_count: u64,
+  broadcast_count: u64,
+  last_updated_block: u32,
+  symbols_tracked: u32,
+};
+
+type QueryReply = enum {
+  Price: opt PriceFeed,
+  Gas: GasFeed,
+  News: vec NewsSummary,
+  Markets: vec MarketFeed,
+  Datetime: DatetimeFeed,
+  All: BridgeSnapshot,
+  Error: str,
+};
+
+constructor {
+  New : (feeder_address: actor_id, network_pid: actor_id);
+};
+
+service VaraBridge {
+  UpdateAll : (payload: FullUpdatePayload) -> null;
+  SetFeeder : (new_feeder: actor_id) -> null;
+  GetPrice : (symbol: str) -> opt PriceFeed;
+  GetGas : () -> GasFeed;
+  GetNews : () -> vec NewsSummary;
+  GetMarkets : () -> vec MarketFeed;
+  GetDatetime : () -> DatetimeFeed;
+  GetAll : () -> BridgeSnapshot;
+  GetSnapshot : (keys: vec str) -> BridgeSnapshot;
+  GetStats : () -> BridgeStats;
+  QueryAndReply : (request: QueryRequest) -> QueryReply;
+  StartAuto : () -> null;
+  DoBroadcastLoop : () -> null;
+};

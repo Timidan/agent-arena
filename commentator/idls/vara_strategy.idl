@@ -1,0 +1,36 @@
+type PriceEntry = struct {
+  symbol: str,
+  price_usd_micro: u64,
+  change_24h_bps: i32,
+  volume_24h_usd: u64,
+};
+
+type RecommendationView = struct {
+  id: u64,
+  rec_type: str,
+  title: str,
+  body: str,
+  confidence: u32,
+  created_block: u32,
+  posted: bool,
+};
+
+type StrategyStats = struct {
+  total_analyzed: u64,
+  total_posted: u64,
+  last_analysis_block: u32,
+  recommendations_count: u32,
+};
+
+constructor {
+  New : (bridge_pid: actor_id, network_pid: actor_id);
+};
+
+service VaraStrategy {
+  Analyze : (prices: vec PriceEntry) -> vec RecommendationView;
+  GetRecommendations : (limit: u32) -> vec RecommendationView;
+  MarkPosted : (rec_id: u64) -> null;
+  GetStats : () -> StrategyStats;
+  StartAuto : () -> null;
+  AutoCycle : () -> null;
+};
