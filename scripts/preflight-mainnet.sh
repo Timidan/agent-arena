@@ -35,3 +35,5 @@ echo "[preflight] OPERATOR_HEX=$OPERATOR_HEX"
 echo "[preflight] VARA_NETWORK=$VARA_NETWORK"
 echo "[preflight] PID=$PID"
 export APP_HEX="0xae7f692ae14dfc2751520439e91f85a9f25239dcfa105a8e3ee76bd073147d6f"
+# aan-tv-relay (Phase 2): tick-driven program-initiated outbound
+export RELAY_HEX="0xece48214a08db3ac815f2461a3c0855230ded9b05ba273a16350a12d28b0dce7"

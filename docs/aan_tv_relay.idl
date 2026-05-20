@@ -1,0 +1,34 @@
+type Error = enum {
+  Unauthorized,
+  TooManyPingTargets,
+  PingTargetNotFound,
+  TickThrottled,
+};
+
+constructor {
+  /// Initialise the program. msg::source() becomes admin.
+  Create : ();
+};
+
+service AanTvRelay {
+  /// Admin: append a program ActorId to the outbound ping list.
+  /// Idempotent: duplicate targets are a no-op.
+  AddPingTarget : (target: actor_id) -> result (null, Error);
+  /// Admin: remove a target from the outbound ping list.
+  RemovePingTarget : (target: actor_id) -> result (null, Error);
+  /// Permissionless: fan out a zero-value heartbeat to every target.
+  /// Throttled to one successful call per `TICK_MIN_BLOCK_GAP` blocks.
+  /// Each outbound is sent FROM this program actor, so the indexer
+  /// attributes the call as `origin: program_initiated` to the relay's
+  /// appMetric. Returns the number of targets pinged on success.
+  Tick : () -> result (u32, Error);
+  /// Query: read the admin ActorId.
+  query GetAdmin : () -> actor_id;
+  /// Query: read the block of the last successful Tick.
+  query GetLastTickBlock : () -> u32;
+  /// Query: read the current ping target list.
+  query GetPingTargets : () -> vec actor_id;
+  /// Query: read the lifetime ping count emitted by this relay.
+  query GetTotalPingsSent : () -> u64;
+};
+
