@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -23,6 +25,7 @@ function parseArgs(argv) {
     sinceBlock: process.env.MISSION_WATCH_SINCE_BLOCK
       ? Number(process.env.MISSION_WATCH_SINCE_BLOCK)
       : null,
+    stateFile: process.env.MISSION_WATCH_STATE_FILE || '',
     once: false,
     exitOnHit: false,
   };
@@ -53,6 +56,9 @@ function parseArgs(argv) {
         break;
       case '--since-block':
         opts.sinceBlock = Number(argv[++i]);
+        break;
+      case '--state-file':
+        opts.stateFile = argv[++i] || '';
         break;
       case '--once':
         opts.once = true;
@@ -96,11 +102,35 @@ Options:
   --idl <path>          AanMissions IDL path for GetStats.
   --network <name>      vara-wallet network. Default: mainnet.
   --since-block <n>     Start watching after this substrate block.
+  --state-file <path>   Persist the watch window so restarts do not miss hits.
   --interval-ms <n>     Poll interval. Default: 60000.
   --timeout-ms <n>      Stop after this many ms. Default: 0, no timeout.
   --once                Print one snapshot and exit.
   --exit-on-hit         Exit after the first new external call, claim, or proof.
 `);
+}
+
+async function readStateFile(path) {
+  if (!path) return null;
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    const sinceBlock = Number(parsed?.sinceBlock);
+    return Number.isSafeInteger(sinceBlock) && sinceBlock >= 0 ? sinceBlock : null;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function writeStateFile(path, sinceBlock) {
+  if (!path) return;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(
+    path,
+    `${JSON.stringify({ sinceBlock, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+    'utf8',
+  );
 }
 
 async function gql(endpoint, query, variables = {}) {
@@ -241,7 +271,8 @@ function printSnapshot({ stats, metric, calls, sinceBlock }) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  let sinceBlock = opts.sinceBlock ?? await latestBlock(opts);
+  let sinceBlock = opts.sinceBlock ?? await readStateFile(opts.stateFile) ?? await latestBlock(opts);
+  await writeStateFile(opts.stateFile, sinceBlock);
   let baselineStats = await readStats(opts);
   const baselineMetric = await appMetric(opts);
   const startedAt = Date.now();
@@ -276,6 +307,7 @@ async function main() {
       baselineStats = stats;
       if (calls.length > 0) {
         sinceBlock = Math.max(...calls.map((call) => Number(call.substrateBlockNumber)));
+        await writeStateFile(opts.stateFile, sinceBlock);
       }
     }
 
