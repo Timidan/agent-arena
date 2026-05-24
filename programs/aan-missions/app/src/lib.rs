@@ -197,6 +197,94 @@ pub struct MissionStats {
     pub rewards_remaining: u128,
 }
 
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionCreatedEvent {
+    pub mission_id: MissionId,
+    pub admin: ActorId,
+    pub title: String,
+    pub target_program: Option<ActorId>,
+    pub reward: u128,
+    pub max_approvals: u32,
+    pub funded_pool: u128,
+    pub deadline_block: u32,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionClaimedEvent {
+    pub mission_id: MissionId,
+    pub claim_id: ClaimId,
+    pub claimant: ActorId,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofSubmittedEvent {
+    pub proof_id: ProofId,
+    pub mission_id: MissionId,
+    pub claim_id: ClaimId,
+    pub claimant: ActorId,
+    pub proof_tx_hash: String,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofApprovedEvent {
+    pub proof_id: ProofId,
+    pub mission_id: MissionId,
+    pub claim_id: ClaimId,
+    pub claimant: ActorId,
+    pub amount: u128,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofRejectedEvent {
+    pub proof_id: ProofId,
+    pub mission_id: MissionId,
+    pub claim_id: ClaimId,
+    pub claimant: ActorId,
+    pub reason: String,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionClosedEvent {
+    pub mission_id: MissionId,
+    pub refund_amount: u128,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct RewardPaidEvent {
+    pub proof_id: ProofId,
+    pub mission_id: MissionId,
+    pub claimant: ActorId,
+    pub amount: u128,
+}
+
+#[sails_rs::event]
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum Events {
+    MissionCreated(MissionCreatedEvent),
+    MissionClaimed(MissionClaimedEvent),
+    ProofSubmitted(ProofSubmittedEvent),
+    ProofApproved(ProofApprovedEvent),
+    ProofRejected(ProofRejectedEvent),
+    MissionClosed(MissionClosedEvent),
+    RewardPaid(RewardPaidEvent),
+}
+
 pub struct AanMissionsState {
     pub admin: ActorId,
     pub next_mission_id: MissionId,
@@ -233,7 +321,7 @@ pub struct AanMissions {
     state: Rc<RefCell<AanMissionsState>>,
 }
 
-#[sails_rs::service]
+#[sails_rs::service(events = Events)]
 impl AanMissions {
     #[export]
     pub fn create_mission(
@@ -270,6 +358,16 @@ impl AanMissions {
 
         let mission_id = state.next_mission_id;
         state.next_mission_id = next;
+        let event = MissionCreatedEvent {
+            mission_id,
+            admin: caller,
+            title: input.title.clone(),
+            target_program: input.target_program.clone(),
+            reward: input.reward,
+            max_approvals: input.max_approvals,
+            funded_pool: required_pool,
+            deadline_block: input.deadline_block,
+        };
         state.missions.insert(
             mission_id,
             Mission {
@@ -288,6 +386,9 @@ impl AanMissions {
                 remaining_pool: required_pool,
             },
         );
+        drop(state);
+
+        let _ = self.emit_event(Events::MissionCreated(event));
 
         CommandReply::new(Ok(mission_id)).with_value(value - required_pool)
     }
@@ -330,6 +431,13 @@ impl AanMissions {
                 latest_proof_id: None,
             },
         );
+        drop(state);
+
+        let _ = self.emit_event(Events::MissionClaimed(MissionClaimedEvent {
+            mission_id,
+            claim_id,
+            claimant: caller,
+        }));
 
         Ok(claim_id)
     }
@@ -374,6 +482,7 @@ impl AanMissions {
             .ok_or(Error::ArithmeticOverflow)?;
         let proof_id = state.next_proof_id;
         state.next_proof_id = next;
+        let proof_tx_hash_event = proof_tx_hash.clone();
 
         state
             .proof_by_tx_hash
@@ -399,6 +508,15 @@ impl AanMissions {
             .ok_or(Error::ClaimNotFound)?;
         claim.status = ClaimStatus::ProofPending;
         claim.latest_proof_id = Some(proof_id);
+        drop(state);
+
+        let _ = self.emit_event(Events::ProofSubmitted(ProofSubmittedEvent {
+            proof_id,
+            mission_id,
+            claim_id,
+            claimant: caller,
+            proof_tx_hash: proof_tx_hash_event,
+        }));
 
         Ok(proof_id)
     }
@@ -466,16 +584,35 @@ impl AanMissions {
         Self::record_approval(
             &mut state,
             proof.claimant,
-            mission.target_program,
+            mission.target_program.clone(),
             mission.reward,
         )?;
 
-        Ok(RewardPaid {
+        let paid = RewardPaid {
             proof_id,
             mission_id: proof.mission_id,
             claimant: proof.claimant,
             amount: mission.reward,
-        })
+        };
+        let approved_event = ProofApprovedEvent {
+            proof_id,
+            mission_id: proof.mission_id,
+            claim_id: proof.claim_id,
+            claimant: proof.claimant,
+            amount: mission.reward,
+        };
+        let paid_event = RewardPaidEvent {
+            proof_id,
+            mission_id: proof.mission_id,
+            claimant: proof.claimant,
+            amount: mission.reward,
+        };
+        drop(state);
+
+        let _ = self.emit_event(Events::ProofApproved(approved_event));
+        let _ = self.emit_event(Events::RewardPaid(paid_event));
+
+        Ok(paid)
     }
 
     #[export]
@@ -505,7 +642,7 @@ impl AanMissions {
                 .get_mut(&proof_id)
                 .ok_or(Error::ProofNotFound)?;
             proof_mut.status = ProofStatus::Rejected;
-            proof_mut.rejection_reason = Some(reason);
+            proof_mut.rejection_reason = Some(reason.clone());
         }
         {
             let claim = state
@@ -515,6 +652,15 @@ impl AanMissions {
             claim.status = ClaimStatus::Rejected;
         }
         Self::record_rejection(&mut state, proof.claimant)?;
+        drop(state);
+
+        let _ = self.emit_event(Events::ProofRejected(ProofRejectedEvent {
+            proof_id,
+            mission_id: proof.mission_id,
+            claim_id: proof.claim_id,
+            claimant: proof.claimant,
+            reason,
+        }));
 
         Ok(())
     }
@@ -548,10 +694,18 @@ impl AanMissions {
         mission_mut.closed = true;
         mission_mut.remaining_pool = 0;
 
-        Ok(RefundAmount {
+        let refund = RefundAmount {
             mission_id,
             amount: mission.remaining_pool,
-        })
+        };
+        drop(state);
+
+        let _ = self.emit_event(Events::MissionClosed(MissionClosedEvent {
+            mission_id,
+            refund_amount: refund.amount,
+        }));
+
+        Ok(refund)
     }
 
     #[export]

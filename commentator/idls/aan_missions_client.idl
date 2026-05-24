@@ -128,6 +128,59 @@ type MissionStats = struct {
   rewards_remaining: u128,
 };
 
+type MissionCreatedEvent = struct {
+  mission_id: u64,
+  admin: actor_id,
+  title: str,
+  target_program: opt actor_id,
+  reward: u128,
+  max_approvals: u32,
+  funded_pool: u128,
+  deadline_block: u32,
+};
+
+type MissionClaimedEvent = struct {
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+};
+
+type ProofSubmittedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  proof_tx_hash: str,
+};
+
+type ProofApprovedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  amount: u128,
+};
+
+type ProofRejectedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  reason: str,
+};
+
+type MissionClosedEvent = struct {
+  mission_id: u64,
+  refund_amount: u128,
+};
+
+type RewardPaidEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claimant: actor_id,
+  amount: u128,
+};
+
 constructor {
   Create : ();
 };
@@ -150,4 +203,14 @@ service AanMissions {
   query GetProof : (proof_id: u64) -> opt Proof;
   query GetProofs : (cursor: opt u64, limit: u32) -> ProofPage;
   query GetStats : () -> MissionStats;
+
+  events {
+    MissionCreated: MissionCreatedEvent;
+    MissionClaimed: MissionClaimedEvent;
+    ProofSubmitted: ProofSubmittedEvent;
+    ProofApproved: ProofApprovedEvent;
+    ProofRejected: ProofRejectedEvent;
+    MissionClosed: MissionClosedEvent;
+    RewardPaid: RewardPaidEvent;
+  }
 };

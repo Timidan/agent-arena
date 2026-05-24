@@ -253,6 +253,36 @@ pub mod aan_missions {
         sails_rs::io_struct_impl!(GetProofs (cursor: Option<u64>, limit: u32) -> super::ProofPage);
         sails_rs::io_struct_impl!(GetStats () -> super::MissionStats);
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod events {
+        use super::*;
+        #[derive(PartialEq, Debug, Encode, Decode)]
+        #[codec(crate = sails_rs::scale_codec)]
+        pub enum AanMissionsEvents {
+            MissionCreated(MissionCreatedEvent),
+            MissionClaimed(MissionClaimedEvent),
+            ProofSubmitted(ProofSubmittedEvent),
+            ProofApproved(ProofApprovedEvent),
+            ProofRejected(ProofRejectedEvent),
+            MissionClosed(MissionClosedEvent),
+            RewardPaid(RewardPaidEvent),
+        }
+        impl sails_rs::client::Event for AanMissionsEvents {
+            const EVENT_NAMES: &'static [Route] = &[
+                "MissionCreated",
+                "MissionClaimed",
+                "ProofSubmitted",
+                "ProofApproved",
+                "ProofRejected",
+                "MissionClosed",
+                "RewardPaid",
+            ];
+        }
+        impl sails_rs::client::ServiceWithEvents for AanMissionsImpl {
+            type Event = AanMissionsEvents;
+        }
+    }
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]
@@ -413,4 +443,71 @@ pub struct MissionStats {
     pub rejected_proofs: u64,
     pub rewards_paid: u128,
     pub rewards_remaining: u128,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionCreatedEvent {
+    pub mission_id: u64,
+    pub admin: ActorId,
+    pub title: String,
+    pub target_program: Option<ActorId>,
+    pub reward: u128,
+    pub max_approvals: u32,
+    pub funded_pool: u128,
+    pub deadline_block: u32,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionClaimedEvent {
+    pub mission_id: u64,
+    pub claim_id: u64,
+    pub claimant: ActorId,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofSubmittedEvent {
+    pub proof_id: u64,
+    pub mission_id: u64,
+    pub claim_id: u64,
+    pub claimant: ActorId,
+    pub proof_tx_hash: String,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofApprovedEvent {
+    pub proof_id: u64,
+    pub mission_id: u64,
+    pub claim_id: u64,
+    pub claimant: ActorId,
+    pub amount: u128,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct ProofRejectedEvent {
+    pub proof_id: u64,
+    pub mission_id: u64,
+    pub claim_id: u64,
+    pub claimant: ActorId,
+    pub reason: String,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct MissionClosedEvent {
+    pub mission_id: u64,
+    pub refund_amount: u128,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct RewardPaidEvent {
+    pub proof_id: u64,
+    pub mission_id: u64,
+    pub claimant: ActorId,
+    pub amount: u128,
 }

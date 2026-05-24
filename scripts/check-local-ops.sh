@@ -349,6 +349,21 @@ check_mission_config() {
         fail "mission.sourceIdl.$method" "missing from generated IDL"
       fi
     done
+
+    for event in \
+      MissionCreated \
+      MissionClaimed \
+      ProofSubmitted \
+      ProofApproved \
+      ProofRejected \
+      MissionClosed \
+      RewardPaid; do
+      if grep -q "$event" "$source_idl"; then
+        pass "mission.sourceIdl.event.$event" "present"
+      else
+        fail "mission.sourceIdl.event.$event" "missing from generated IDL"
+      fi
+    done
   else
     fail mission.sourceIdl "missing $source_idl"
   fi

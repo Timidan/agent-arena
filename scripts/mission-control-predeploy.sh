@@ -160,6 +160,22 @@ for method in \
   fi
 done
 
+for event in \
+  MissionCreated \
+  MissionClaimed \
+  ProofSubmitted \
+  ProofApproved \
+  ProofRejected \
+  MissionClosed \
+  RewardPaid; do
+  if grep -q "$event" "$IDL"; then
+    echo "PASS idl.event.$event"
+  else
+    echo "FAIL missing IDL event: $event" >&2
+    exit 1
+  fi
+done
+
 echo
 echo "Artifact hashes:"
 sha256sum "$WASM" "$IDL" "$CLIENT_IDL" "$COMMENTATOR_IDL"
