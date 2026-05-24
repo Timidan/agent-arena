@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   evaluateProof,
   runMissionVerifierCycle,
@@ -13,7 +13,8 @@ import {
   fetchChainTipBlock,
   fetchInteractionByProofHash,
 } from './indexer.js';
-import type { Executor } from './chat.js';
+import { postChatAsApplication, type Executor } from './chat.js';
+import { ensureFresh } from './voucher.js';
 import type { Interaction } from './indexer.js';
 
 vi.mock('./indexer.js', async (importOriginal) => {
@@ -23,6 +24,22 @@ vi.mock('./indexer.js', async (importOriginal) => {
     fetchApplicationInfo: vi.fn(),
     fetchChainTipBlock: vi.fn(),
     fetchInteractionByProofHash: vi.fn(),
+  };
+});
+
+vi.mock('./chat.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./chat.js')>();
+  return {
+    ...actual,
+    postChatAsApplication: vi.fn(),
+  };
+});
+
+vi.mock('./voucher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./voucher.js')>();
+  return {
+    ...actual,
+    ensureFresh: vi.fn(),
   };
 });
 
@@ -77,6 +94,8 @@ const opts = {
 const mockedFetchApplicationInfo = vi.mocked(fetchApplicationInfo);
 const mockedFetchChainTipBlock = vi.mocked(fetchChainTipBlock);
 const mockedFetchInteractionByProofHash = vi.mocked(fetchInteractionByProofHash);
+const mockedEnsureFresh = vi.mocked(ensureFresh);
+const mockedPostChatAsApplication = vi.mocked(postChatAsApplication);
 let tempDir: string | null = null;
 
 function missionRow(value: MissionVerifierMission) {
@@ -138,9 +157,13 @@ function calledMethods(executor: Executor): string[] {
   return vi.mocked(executor).mock.calls.map(([, args]) => methodFromArgs(args));
 }
 
+beforeAll(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'aan-mission-verifier-'));
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
-  tempDir = mkdtempSync(join(tmpdir(), 'aan-mission-verifier-'));
+  if (!tempDir) throw new Error('missing tempDir');
   process.env.CHECKPOINT_DB = join(tempDir, 'checkpoint.sqlite');
   process.env.MISSION_VERIFIER_ENABLED = 'true';
   process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'false';
@@ -157,6 +180,8 @@ beforeEach(() => {
   mockedFetchChainTipBlock.mockResolvedValue(160);
   mockedFetchInteractionByProofHash.mockResolvedValue(interaction);
   mockedFetchApplicationInfo.mockResolvedValue(null);
+  mockedEnsureFresh.mockResolvedValue('voucher-id');
+  mockedPostChatAsApplication.mockResolvedValue({ msgId: '7', txHash: '0xchat' });
 });
 
 afterEach(() => {
@@ -173,6 +198,9 @@ afterEach(() => {
   delete process.env.MAX_DAILY_MISSION_VERIFIER_CALLS;
   delete process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW;
   delete process.env.MAX_DAILY_SPEND_RAW;
+});
+
+afterAll(() => {
   if (tempDir) rmSync(tempDir, { force: true, recursive: true });
   tempDir = null;
 });
@@ -312,7 +340,7 @@ describe('runMissionVerifierCycle', () => {
 
   it('submits approval and confirms proof state when approval mode is enabled', async () => {
     process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
-    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '1';
+    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '10';
     process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
     const executor = makeExecutor();
 
@@ -350,5 +378,59 @@ describe('runMissionVerifierCycle', () => {
       'AanMissions/GetPendingProofs',
       'AanMissions/GetMission',
     ]);
+  });
+
+  it('posts an AAN-TV highlight only after approval is confirmed', async () => {
+    process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
+    process.env.MISSION_VERIFIER_POST_HIGHLIGHTS = 'true';
+    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '10';
+    process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
+    const executor = makeExecutor();
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      approved: 1,
+      rejected: 0,
+      deferred: 0,
+      errors: [],
+    });
+    expect(calledMethods(executor)).toEqual([
+      'AanMissions/GetPendingProofs',
+      'AanMissions/GetMission',
+      'AanMissions/ApproveProof',
+      'AanMissions/GetProof',
+    ]);
+    expect(mockedEnsureFresh).toHaveBeenCalledTimes(1);
+    expect(mockedPostChatAsApplication).toHaveBeenCalledWith({
+      body: expect.stringContaining('AAN Missions approved @agent-a'),
+      mentions: [{ kind: 'Application', hex: CLAIMANT }],
+    });
+    expect(mockedPostChatAsApplication.mock.calls[0][0].body).toContain('paid 1 VARA');
+  });
+
+  it('does not post a highlight when approval confirmation fails', async () => {
+    process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
+    process.env.MISSION_VERIFIER_POST_HIGHLIGHTS = 'true';
+    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '10';
+    process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
+    const executor = makeExecutor({
+      'AanMissions/GetProof': proofRow({ ...proof, status: 'Pending' }),
+    });
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      approved: 1,
+      rejected: 0,
+      deferred: 0,
+    });
+    expect(summary?.errors).toEqual([
+      { proofId: proof.id, error: `approval not confirmed for proof ${proof.id}` },
+    ]);
+    expect(mockedEnsureFresh).not.toHaveBeenCalled();
+    expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
   });
 });
