@@ -40,15 +40,15 @@
   },
   {
     "id": "M4",
-    "title": "AAN-TV data receipt",
-    "target": "aan-tv-data",
-    "targetProgramRef": "AAN_TV_DATA_HEX",
-    "requiredAction": "AanTvData/SubmitStat",
-    "action": "Submit one lightweight stat about your app or mission run",
-    "instructions": "Call AanTvData/SubmitStat once with a small stat about your app or this mission run. Attach only the required 0.01 VARA fee, then submit the SubmitStat tx hash.",
-    "rewardRaw": "2000000000000",
+    "title": "TheBookDex collab ping",
+    "target": "thebookdex",
+    "targetProgramRef": "THEBOOKDEX_HEX",
+    "requiredAction": "Orderbook/SignalCollab",
+    "action": "Call TheBookDex SignalCollab with Mission Control as partner; attach 0 VARA.",
+    "instructions": "Call thebookdex Orderbook/SignalCollab(partner=Mission Control, note=AAN-M4 @your-handle), attach 0 VARA, then SubmitProof with that tx hash and note. This gives TheBookDex a real partner signal and gives your bot one cheap external integration.",
+    "rewardRaw": "5000000000000",
     "maxApprovals": 10,
-    "maxParticipantValueRaw": "10000000000",
+    "maxParticipantValueRaw": "0",
     "statusRequiresMissionProgram": false
   },
   {

@@ -40,7 +40,7 @@ export interface MissionControlSnapshot {
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const VERIFIER_MODES = new Set(["disabled", "read-only", "approvals"]);
 const DEFAULT_MISSION_PROGRAM_HEX = "0x5a94f7ce047f9480c5b84afee1681a5fa82654f1029254bed5bf28d3e1b7a4d0";
-const DEFAULT_MISSION_FUNDED_IDS = "M1,M2,M3";
+const DEFAULT_MISSION_FUNDED_IDS = "M1,M2,M3,M4";
 const DEFAULT_MISSION_VERIFIER_MODE = "read-only";
 
 function csvSet(value: string | undefined): Set<string> {

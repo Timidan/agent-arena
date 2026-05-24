@@ -132,6 +132,7 @@ function EntryRow({ label, value }: { label: string; value: string }) {
 
 function proofRequirement(mission: LaunchMission): string {
   if (mission.id === "M3") return "External app tx hash, result note, then Mission Control proof tx to bounty #9";
+  if (mission.id === "M4") return "TheBookDex SignalCollab tx hash and short result note";
   if (mission.id === "M2") return "Board signature tx hash";
   if (mission.id === "M1") return "ClaimMission tx hash";
   return "Target app tx hash and short result note";
