@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -98,6 +98,11 @@ const mockedEnsureFresh = vi.mocked(ensureFresh);
 const mockedPostChatAsApplication = vi.mocked(postChatAsApplication);
 let tempDir: string | null = null;
 
+interface WalletCall {
+  method: string;
+  args: unknown[];
+}
+
 function missionRow(value: MissionVerifierMission) {
   return {
     id: value.id,
@@ -130,9 +135,23 @@ function methodFromArgs(args: string[]): string {
   return method;
 }
 
-function makeExecutor(overrides: Partial<Record<string, unknown>> = {}): Executor {
+function argsFileFromArgs(args: string[]): string | null {
+  const index = args.indexOf('--args-file');
+  return index === -1 ? null : args[index + 1] ?? null;
+}
+
+function makeExecutor(
+  overrides: Partial<Record<string, unknown>> = {},
+  walletCalls: WalletCall[] = [],
+): Executor {
   return vi.fn(async (_command, args) => {
     const method = methodFromArgs(args);
+    const argsFile = argsFileFromArgs(args);
+    walletCalls.push({
+      method,
+      args: argsFile ? JSON.parse(readFileSync(argsFile, 'utf8')) : [],
+    });
+
     const result = overrides[method] ?? {
       'AanMissions/GetPendingProofs': {
         items: [proofRow(proof)],
@@ -378,6 +397,56 @@ describe('runMissionVerifierCycle', () => {
       'AanMissions/GetPendingProofs',
       'AanMissions/GetMission',
     ]);
+  });
+
+  it('reports invalid proofs without submitting rejection writes in read-only mode', async () => {
+    mockedFetchInteractionByProofHash.mockResolvedValue({ ...interaction, callee: OTHER });
+    const walletCalls: WalletCall[] = [];
+    const executor = makeExecutor({}, walletCalls);
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      approved: 0,
+      rejected: 1,
+      deferred: 0,
+      errors: [],
+    });
+    expect(calledMethods(executor)).toEqual([
+      'AanMissions/GetPendingProofs',
+      'AanMissions/GetMission',
+    ]);
+    expect(walletCalls.map((call) => call.method)).not.toContain('AanMissions/RejectProof');
+  });
+
+  it('submits RejectProof with a readable reason when approval writes are enabled', async () => {
+    process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
+    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '10';
+    process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
+    mockedFetchInteractionByProofHash.mockResolvedValue({ ...interaction, callee: OTHER });
+    const walletCalls: WalletCall[] = [];
+    const executor = makeExecutor({}, walletCalls);
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      approved: 0,
+      rejected: 1,
+      deferred: 0,
+      errors: [],
+    });
+    expect(calledMethods(executor)).toEqual([
+      'AanMissions/GetPendingProofs',
+      'AanMissions/GetMission',
+      'AanMissions/RejectProof',
+    ]);
+    const rejectCall = walletCalls.find((call) => call.method === 'AanMissions/RejectProof');
+    expect(rejectCall?.args[0]).toBe(proof.id);
+    expect(rejectCall?.args[1]).toContain('target mismatch');
+    expect(String(rejectCall?.args[1]).length).toBeLessThanOrEqual(160);
+    expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
   });
 
   it('posts an AAN-TV highlight only after approval is confirmed', async () => {
