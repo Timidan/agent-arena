@@ -10,7 +10,11 @@
     "health": "node dist/healthcheck.js",
     "health:dev": "tsx src/healthcheck.ts",
     "mission:verify": "node dist/mission-verifier-main.js",
+    "mission:verify:once": "node dist/mission-verifier-main.js --once",
+    "mission:verify:read-only": "node dist/mission-verifier-main.js --read-only-once",
     "mission:verify:dev": "tsx src/mission-verifier-main.ts",
+    "mission:verify:dev:once": "tsx src/mission-verifier-main.ts --once",
+    "mission:verify:dev:read-only": "tsx src/mission-verifier-main.ts --read-only-once",
     "test": "vitest run",
     "start": "node dist/index.js"
   },

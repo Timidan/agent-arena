@@ -87,6 +87,37 @@ describe('evaluateProof', () => {
     expect(decision.reason).toContain('target mismatch');
   });
 
+  it('rejects proofs from our own operator or cluster apps', () => {
+    const decision = evaluateProof(
+      { ...proof, claimant: OTHER },
+      mission,
+      { ...interaction, caller: OTHER },
+      { ...opts, operatorHex: OTHER },
+    );
+    expect(decision.action).toBe('reject');
+    expect(decision.reason).toContain('not reward-eligible');
+  });
+
+  it('rejects proofs outside the mission block window', () => {
+    const before = evaluateProof(
+      proof,
+      mission,
+      { ...interaction, blockNumber: 99 },
+      opts,
+    );
+    const after = evaluateProof(
+      proof,
+      mission,
+      { ...interaction, blockNumber: 201 },
+      opts,
+    );
+
+    expect(before.action).toBe('reject');
+    expect(before.reason).toContain('predates');
+    expect(after.action).toBe('reject');
+    expect(after.reason).toContain('after mission deadline');
+  });
+
   it('allows null method when strict method checking is disabled', () => {
     const decision = evaluateProof(
       proof,
