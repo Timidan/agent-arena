@@ -6,14 +6,19 @@ import {
   Coins,
   Crosshair,
   Gauge,
+  ListChecks,
   ShieldCheck,
+  Trophy,
   WarningCircle,
 } from "@phosphor-icons/react/dist/ssr";
 import { TickerMarquee } from "@/components/ticker-marquee";
 import { SmpteBar } from "@/components/smpte-bars";
 import { fetchClusterMetrics } from "@/lib/indexer";
 import { formatNumber, formatVara } from "@/lib/format";
+import { fetchMissionLiveSnapshot } from "@/lib/mission-live";
 import { getMissionControlSnapshot, shortHex, type MissionStatus } from "@/lib/missions";
+
+export const runtime = "nodejs";
 
 const STATUS_STYLES: Record<MissionStatus, string> = {
   ready: "border-[#39FF14]/40 text-[#39FF14] bg-[#39FF14]/5",
@@ -63,10 +68,19 @@ function StatCell({
   );
 }
 
+function plainNumber(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+function shortText(value: string, max = 96): string {
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
 export default async function MissionsPage() {
-  const [snapshot, cluster] = await Promise.all([
-    Promise.resolve(getMissionControlSnapshot()),
+  const snapshot = getMissionControlSnapshot();
+  const [cluster, live] = await Promise.all([
     fetchClusterMetrics(),
+    fetchMissionLiveSnapshot(snapshot.programHex),
   ]);
 
   return (
@@ -146,6 +160,132 @@ export default async function MissionsPage() {
             </div>
           </section>
         </header>
+
+        <section className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-6">
+          <div className="border border-[#2A3340] bg-[#0A0E14] rounded-lg p-5 flex flex-col gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ListChecks size={15} weight="bold" className="text-[#00CFFF]" />
+                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                  Mission Ledger
+                </span>
+              </div>
+              <StatusChip
+                label={live.available ? "live reads" : live.source === "standby" ? "standby" : "reader offline"}
+                tone={live.available ? "green" : live.source === "standby" ? "amber" : "red"}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+              <StatCell label="Missions" value={plainNumber(live.stats?.totalMissions ?? 0)} />
+              <StatCell label="Open" value={plainNumber(live.stats?.openMissions ?? 0)} accent="#00CFFF" />
+              <StatCell label="Pending Proofs" value={plainNumber(live.stats?.pendingProofs ?? 0)} accent="#FF9F1C" />
+              <StatCell label="Approved" value={plainNumber(live.stats?.approvedProofs ?? 0)} accent="#39FF14" />
+              <StatCell label="Paid" value={formatVara(live.stats?.rewardsPaid ?? "0")} accent="#FF2D9C" />
+              <StatCell label="Remaining" value={formatVara(live.stats?.rewardsRemaining ?? "0")} accent="#E5E9EE" />
+            </div>
+
+            {live.error && (
+              <div className="rounded-md border border-[#FF9F1C]/30 bg-[#FF9F1C]/5 px-3 py-2">
+                <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
+                  {shortText(live.error)}
+                </p>
+              </div>
+            )}
+
+            <div className="border border-[#2A3340] rounded-lg overflow-hidden">
+              <div className="hidden md:grid grid-cols-[70px_1fr_110px_110px] gap-3 px-4 py-2 border-b border-[#2A3340] bg-[#111820]">
+                {["ID", "Mission", "Approved", "Pool"].map((head) => (
+                  <span key={head} className="font-mono text-[10px] uppercase text-[#3D4A5C]">
+                    {head}
+                  </span>
+                ))}
+              </div>
+              <div className="divide-y divide-[#2A3340]/70">
+                {(live.missions.length > 0 ? live.missions : snapshot.launchMissions.slice(0, 3)).map((mission) => (
+                  <article
+                    key={mission.id}
+                    className="grid grid-cols-1 md:grid-cols-[70px_1fr_110px_110px] gap-3 px-4 py-3"
+                  >
+                    <span className="font-display text-2xl leading-none text-[#39FF14]">
+                      {mission.id}
+                    </span>
+                    <span className="font-mono text-xs text-[#E5E9EE]">
+                      {mission.title}
+                    </span>
+                    <span className="font-mono text-xs text-[#00CFFF]">
+                      {"approvalsCount" in mission ? `${mission.approvalsCount}/${mission.maxApprovals}` : `0/${mission.maxApprovals}`}
+                    </span>
+                    <span className="font-mono text-xs text-[#FF9F1C]">
+                      {formatVara("remainingPool" in mission ? mission.remainingPool : mission.rewardRaw)}
+                    </span>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <aside className="flex flex-col gap-4">
+            <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <Trophy size={15} weight="bold" className="text-[#39FF14]" />
+                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                  Agent Records
+                </span>
+              </div>
+              {(live.agentRecords.length > 0 ? live.agentRecords : []).map((record) => (
+                <div key={record.agent} className="grid grid-cols-[1fr_auto] gap-3 border-b border-[#2A3340]/70 pb-3 last:border-b-0 last:pb-0">
+                  <span className="font-mono text-xs text-[#E5E9EE] truncate">
+                    {shortHex(record.agent)}
+                  </span>
+                  <span className="font-mono text-xs text-[#39FF14]">
+                    {record.completedCount} done
+                  </span>
+                  <span className="font-mono text-[10px] text-[#7A8896]">
+                    earned {formatVara(record.totalRewardsEarned)}
+                  </span>
+                  <span className="font-mono text-[10px] text-[#FF9F1C]">
+                    {record.rejectedProofCount} rejected
+                  </span>
+                </div>
+              ))}
+              {live.agentRecords.length === 0 && (
+                <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
+                  No completed mission records yet.
+                </p>
+              )}
+            </div>
+
+            <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <ClipboardText size={15} weight="bold" className="text-[#00CFFF]" />
+                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                  Proof Trail
+                </span>
+              </div>
+              {live.proofs.slice(0, 5).map((proof) => (
+                <div key={proof.id} className="grid grid-cols-[auto_1fr] gap-3 border-b border-[#2A3340]/70 pb-3 last:border-b-0 last:pb-0">
+                  <span className="font-display text-xl leading-none text-[#39FF14]">
+                    #{proof.id}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-mono text-xs text-[#E5E9EE] truncate">
+                      M{proof.missionId} · {proof.status}
+                    </p>
+                    <p className="font-mono text-[10px] text-[#7A8896] truncate">
+                      {shortHex(proof.claimant)} · {shortText(proof.note, 48)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {live.proofs.length === 0 && (
+                <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
+                  No submitted proofs yet.
+                </p>
+              )}
+            </div>
+          </aside>
+        </section>
 
         <section className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6">
           <div className="flex flex-col gap-3">

@@ -22,6 +22,9 @@ Set these in the Vercel project settings (or in `.env.local` for local dev):
 | `NEXT_PUBLIC_MISSION_REWARD_BUDGET_VARA` | Planned mission reward pool shown on `/missions` |
 | `NEXT_PUBLIC_MISSION_DAILY_REWARD_CAP_VARA` | Daily payout cap shown on `/missions` |
 | `NEXT_PUBLIC_MISSION_MAX_REWARD_VARA` | Max automatic approval amount shown on `/missions` |
+| `MISSION_LIVE_READS` | Optional server-side live Mission Control reads via `vara-wallet`; default `true` |
+| `MISSION_IDL_PATH` | Optional server-side path to `aan_missions_client.idl` |
+| `MISSION_READ_TIMEOUT_MS` | Timeout for server-side Mission Control read calls |
 
 ## Local Development
 
@@ -37,3 +40,4 @@ npm run dev
 - All data fetched server-side with 5s revalidation — no client-side JS for data
 - Dark-themed broadcast dashboard plus `/missions` Mission Control panel
 - No wallet key in the UI; signed mission writes stay in user wallets or the verifier bot
+- Mission Control live reads are server-side only and degrade to standby/offline status if `vara-wallet` or the IDL is unavailable
