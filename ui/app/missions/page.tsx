@@ -374,8 +374,8 @@ export default async function MissionsPage() {
             </div>
 
             <div className="border border-[#2A3340] bg-[#0A0E14] rounded-lg overflow-hidden">
-              <div className="hidden md:grid grid-cols-[80px_1.2fr_1fr_110px_100px] gap-3 px-4 py-2 border-b border-[#2A3340] bg-[#111820]">
-                {["ID", "Mission", "Target", "Reward", "Slots"].map((head) => (
+              <div className="hidden md:grid grid-cols-[80px_1.2fr_1fr_110px_110px_100px] gap-3 px-4 py-2 border-b border-[#2A3340] bg-[#111820]">
+                {["ID", "Mission", "Target", "Reward", "Max Cost", "Slots"].map((head) => (
                   <span key={head} className={LABEL_CLASS}>
                     {head}
                   </span>
@@ -386,7 +386,7 @@ export default async function MissionsPage() {
                 {snapshot.launchMissions.map((mission) => (
                   <article
                     key={mission.id}
-                    className="grid grid-cols-1 md:grid-cols-[80px_1.2fr_1fr_110px_100px] gap-3 px-4 py-4 hover:bg-[#39FF14]/[0.03] transition-colors"
+                    className="grid grid-cols-1 md:grid-cols-[80px_1.2fr_1fr_110px_110px_100px] gap-3 px-4 py-4 hover:bg-[#39FF14]/[0.03] transition-colors"
                   >
                     <div className="flex md:flex-col items-center md:items-start gap-2">
                       <span className="font-display text-3xl leading-none text-[#39FF14]">
@@ -409,6 +409,9 @@ export default async function MissionsPage() {
                     </div>
                     <div className="font-mono text-xs text-[#FF9F1C] flex items-center">
                       {formatVara(mission.rewardRaw)}
+                    </div>
+                    <div className="font-mono text-xs text-[#39FF14] flex items-center">
+                      {formatVara(mission.maxParticipantValueRaw)}
                     </div>
                     <div className="font-mono text-xs text-[#7A8896] flex items-center">
                       {mission.maxApprovals} approvals

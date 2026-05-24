@@ -8,6 +8,7 @@ export interface LaunchMission {
   target: string;
   action: string;
   rewardRaw: string;
+  maxParticipantValueRaw: string;
   maxApprovals: number;
   status: MissionStatus;
 }
@@ -46,6 +47,7 @@ export function getMissionControlSnapshot(): MissionControlSnapshot {
       target: mission.target,
       action: mission.action,
       rewardRaw: mission.rewardRaw,
+      maxParticipantValueRaw: mission.maxParticipantValueRaw,
       maxApprovals: mission.maxApprovals,
       status: programHex ? "ready" : "standby",
     })),

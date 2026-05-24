@@ -22,6 +22,7 @@ export interface MissionLiveMission {
   id: string;
   title: string;
   reward: string;
+  maxParticipantValue: string;
   maxApprovals: number;
   approvalsCount: number;
   closed: boolean;
@@ -168,6 +169,7 @@ function parseMission(raw: unknown): MissionLiveMission | null {
     id,
     title: stringField(row, "title", "title"),
     reward: stringField(row, "reward", "reward"),
+    maxParticipantValue: stringField(row, "max_participant_value", "maxParticipantValue"),
     maxApprovals: numberField(row, "max_approvals", "maxApprovals"),
     approvalsCount: numberField(row, "approvals_count", "approvalsCount"),
     closed: boolField(row, "closed", "closed"),

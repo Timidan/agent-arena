@@ -36,6 +36,7 @@ export interface MissionVerifierMission {
   title: string;
   targetProgram: string | null;
   requiredAction: string;
+  maxParticipantValue: string;
   reward: string;
   deadlineBlock: number;
   createdAtBlock: number;
@@ -121,6 +122,7 @@ export function parseMission(raw: unknown): MissionVerifierMission | null {
     title: stringField(row, 'title', 'title'),
     targetProgram: optionalStringField(row, 'target_program', 'targetProgram'),
     requiredAction: stringField(row, 'required_action', 'requiredAction'),
+    maxParticipantValue: stringField(row, 'max_participant_value', 'maxParticipantValue') || '0',
     reward: stringField(row, 'reward', 'reward'),
     deadlineBlock: numberField(row, 'deadline_block', 'deadlineBlock'),
     createdAtBlock: numberField(row, 'created_at_block', 'createdAtBlock'),
@@ -179,7 +181,30 @@ function actionMatches(requiredAction: string, method: string | null): boolean {
 }
 
 function requiresExternalRegisteredApp(requiredAction: string): boolean {
-  return requiredAction.trim().toLowerCase() === 'external_registered_app';
+  const required = requiredAction.trim().toLowerCase();
+  return required === 'external_registered_app' || required === 'external_registered_app_zero_value';
+}
+
+function requiresZeroAttachedValue(requiredAction: string): boolean {
+  return requiredAction.trim().toLowerCase() === 'external_registered_app_zero_value';
+}
+
+function hasAttachedValue(interaction: Interaction): boolean {
+  if (!interaction.valuePaidRaw || interaction.valuePaidRaw === '0') return false;
+  try {
+    return BigInt(interaction.valuePaidRaw) > 0n;
+  } catch {
+    return true;
+  }
+}
+
+function exceedsMaxParticipantValue(interaction: Interaction, maxParticipantValue: string): boolean {
+  if (!interaction.valuePaidRaw) return false;
+  try {
+    return BigInt(interaction.valuePaidRaw) > BigInt(maxParticipantValue || '0');
+  } catch {
+    return true;
+  }
 }
 
 export function evaluateProof(
@@ -232,6 +257,14 @@ export function evaluateProof(
     };
   }
 
+  if (exceedsMaxParticipantValue(interaction, mission.maxParticipantValue)) {
+    return {
+      action: 'reject',
+      reason: `participant cost exceeds mission cap: max ${mission.maxParticipantValue}, got ${interaction.valuePaidRaw ?? '0'}`,
+      interaction,
+    };
+  }
+
   if (requiresExternalRegisteredApp(mission.requiredAction)) {
     if (ownHexes(opts).has(interaction.callee.toLowerCase())) {
       return {
@@ -245,6 +278,14 @@ export function evaluateProof(
       return {
         action: 'reject',
         reason: 'external mission target is not a registered application',
+        interaction,
+      };
+    }
+
+    if (requiresZeroAttachedValue(mission.requiredAction) && hasAttachedValue(interaction)) {
+      return {
+        action: 'reject',
+        reason: 'external zero-value mission cannot require attached VARA',
         interaction,
       };
     }

@@ -17,9 +17,11 @@ const MAX_TITLE_BYTES = 80;
 const MAX_INSTRUCTIONS_BYTES = 400;
 const MAX_ACTION_BYTES = 120;
 const MAX_APPROVALS_PER_MISSION = 1_000;
+const MAX_PARTICIPANT_VALUE_RAW = 100_000_000_000n; // 0.1 VARA
 
 const FALLBACKS = {
   AAN_TV_BOARD_HEX: '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d',
+  AAN_TV_DATA_HEX: '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c',
   VARABRIDGE_HEX: '0xfb7ed5a79dc2ff15283a524a4489321b5e1f6341db2b9892be83b9568cc1fcb4',
 };
 
@@ -211,6 +213,17 @@ function validateTemplate(template, seenIds) {
     throw new Error(`${id}.rewardRaw must be a positive integer string`);
   }
 
+  try {
+    const maxParticipantValue = BigInt(template.maxParticipantValueRaw);
+    if (maxParticipantValue < 0n || maxParticipantValue > MAX_PARTICIPANT_VALUE_RAW) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error(
+      `${id}.maxParticipantValueRaw must be an integer string from 0 to ${MAX_PARTICIPANT_VALUE_RAW}`,
+    );
+  }
+
   if (
     !Number.isSafeInteger(template.maxApprovals) ||
     template.maxApprovals <= 0 ||
@@ -266,6 +279,7 @@ function buildMission(template, env, programHex, deadlineBlock) {
     instructions: template.instructions,
     target_program: targetProgram,
     required_action: template.requiredAction,
+    max_participant_value: template.maxParticipantValueRaw,
     reward: template.rewardRaw,
     max_approvals: template.maxApprovals,
     deadline_block: deadlineBlock,
@@ -281,12 +295,12 @@ function buildMission(template, env, programHex, deadlineBlock) {
 }
 
 function printTable(missions) {
-  console.log('| ID | Mission | Target | Reward | Slots | Pool |');
-  console.log('| --- | --- | --- | ---: | ---: | ---: |');
+  console.log('| ID | Mission | Target | Reward | Max cost | Slots | Pool |');
+  console.log('| --- | --- | --- | ---: | ---: | ---: | ---: |');
   for (const mission of missions) {
     console.log(
       `| ${mission.id} | ${mission.title} | ${mission.target} | ` +
-      `${formatVara(mission.rewardRaw)} VARA | ${mission.maxApprovals} | ` +
+      `${formatVara(mission.rewardRaw)} VARA | ${formatVara(mission.maxParticipantValueRaw)} VARA | ${mission.maxApprovals} | ` +
       `${formatVara(mission.poolRaw)} VARA |`,
     );
   }

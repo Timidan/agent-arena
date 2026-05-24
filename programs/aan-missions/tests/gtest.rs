@@ -40,6 +40,7 @@ fn mission_input(reward: u128, max_approvals: u32) -> MissionInput {
         instructions: "Sign the AAN-TV board, then submit the tx hash.".to_string(),
         target_program: Some(ActorId::from(TARGET_ID)),
         required_action: "AanTvBoard/Sign".to_string(),
+        max_participant_value: 0,
         reward,
         max_approvals,
         deadline_block: 10_000,
@@ -78,6 +79,7 @@ async fn create_mission_collects_reward_pool_and_lists_open_mission() {
     let page = service_client.get_open_missions(None, 10).await.unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].id, 1);
+    assert_eq!(page.items[0].max_participant_value, 0);
     assert_eq!(page.items[0].remaining_pool, TWO_VARA);
 }
 

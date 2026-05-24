@@ -53,6 +53,7 @@ const mission: MissionVerifierMission = {
   title: 'Sign the board',
   targetProgram: TARGET,
   requiredAction: 'AanTvBoard/Sign',
+  maxParticipantValue: '0',
   reward: '1000000000000',
   deadlineBlock: 200,
   createdAtBlock: 100,
@@ -109,6 +110,7 @@ function missionRow(value: MissionVerifierMission) {
     title: value.title,
     target_program: value.targetProgram,
     required_action: value.requiredAction,
+    max_participant_value: value.maxParticipantValue,
     reward: value.reward,
     deadline_block: value.deadlineBlock,
     created_at_block: value.createdAtBlock,
@@ -293,6 +295,18 @@ describe('evaluateProof', () => {
     expect(after.reason).toContain('after mission deadline');
   });
 
+  it('rejects proof txs that exceed the mission participant cost cap', () => {
+    const decision = evaluateProof(
+      proof,
+      mission,
+      { ...interaction, valuePaidRaw: '1' },
+      opts,
+    );
+
+    expect(decision.action).toBe('reject');
+    expect(decision.reason).toContain('participant cost exceeds mission cap');
+  });
+
   it('allows null method when strict method checking is disabled', () => {
     const decision = evaluateProof(
       proof,
@@ -334,6 +348,32 @@ describe('evaluateProof', () => {
     expect(ownTarget.action).toBe('reject');
     expect(ownTarget.reason).toContain('own cluster');
     expect(registered.action).toBe('approve');
+  });
+
+  it('rejects zero-value external missions when the proof tx attaches VARA', () => {
+    const externalMission = {
+      ...mission,
+      targetProgram: null,
+      requiredAction: 'external_registered_app_zero_value',
+      maxParticipantValue: '1000000000000',
+    };
+
+    const paid = evaluateProof(
+      proof,
+      externalMission,
+      { ...interaction, valuePaidRaw: '1' },
+      { ...opts, strictMethod: true, calleeRegistered: true },
+    );
+    const free = evaluateProof(
+      proof,
+      externalMission,
+      { ...interaction, valuePaidRaw: '0' },
+      { ...opts, strictMethod: true, calleeRegistered: true },
+    );
+
+    expect(paid.action).toBe('reject');
+    expect(paid.reason).toContain('zero-value');
+    expect(free.action).toBe('approve');
   });
 });
 

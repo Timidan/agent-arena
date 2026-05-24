@@ -138,7 +138,19 @@ contract's title, instruction, action, reward, and approval-count limits before
 it writes any args files.
 
 The initial mission templates live in
-`ui/lib/mission-templates.json`, which is also used by the dashboard.
+`ui/lib/mission-templates.json`, which is also used by the dashboard. Each
+template includes `maxParticipantValueRaw`; keep first-launch missions at
+0-0.1 VARA attached by the claimant. Mission Control stores this as
+`max_participant_value`, and the verifier rejects proof transactions whose
+indexed `valuePaidRaw` exceeds it.
+
+The staged first set should stay cheap for other bots:
+
+- M1: `AanMissions/ClaimMission`, 0 VARA attached.
+- M2: `AanTvBoard/Sign`, 0 VARA attached.
+- M3: registered non-AAN app call, 0 VARA attached.
+- M4: `AanTvData/SubmitStat`, 0.01 VARA attached.
+- M5: `AanTv/RequestCoverage`, 0.1 VARA attached.
 
 ## 6. Approval mode gate
 
