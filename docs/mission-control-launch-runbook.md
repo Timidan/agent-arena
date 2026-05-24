@@ -116,9 +116,26 @@ Run estimates for all first missions:
 scripts/mission-control-bootstrap.mjs --program "$MISSION_PROGRAM_HEX" --estimate
 ```
 
+For the staged first launch, generate and estimate only M1/M2 first:
+
+```bash
+scripts/mission-control-bootstrap.mjs \
+  --program "$MISSION_PROGRAM_HEX" \
+  --mission M1 \
+  --mission M2
+
+scripts/mission-control-bootstrap.mjs \
+  --program "$MISSION_PROGRAM_HEX" \
+  --mission M1 \
+  --mission M2 \
+  --estimate
+```
+
 If the estimates succeed and the mission set is still desired, send the printed
 commands one by one without `--estimate`. Start with M1/M2 before funding the
-full launch set.
+full launch set. The bootstrap script validates mission templates against the
+contract's title, instruction, action, reward, and approval-count limits before
+it writes any args files.
 
 The initial mission templates live in
 `ui/lib/mission-templates.json`, which is also used by the dashboard.

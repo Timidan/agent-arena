@@ -13,6 +13,10 @@ const defaultOutDir = path.join(root, '.mission-control/seed-missions');
 
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const DEFAULT_DEADLINE_OFFSET_BLOCKS = 300_000;
+const MAX_TITLE_BYTES = 80;
+const MAX_INSTRUCTIONS_BYTES = 400;
+const MAX_ACTION_BYTES = 120;
+const MAX_APPROVALS_PER_MISSION = 1_000;
 
 const FALLBACKS = {
   AAN_TV_BOARD_HEX: '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d',
@@ -31,6 +35,7 @@ Options:
   --out-dir <path>           Output directory. Default: .mission-control/seed-missions
   --deadline-block <number>  Use an exact deadline block.
   --deadline-offset <blocks> Offset from current indexer tip. Default: 300000
+  --mission <id>             Generate one mission id. Repeat for staged launch.
   --estimate                 Run vara-wallet --estimate for each CreateMission call.
   -h, --help                 Show this help.
 `);
@@ -44,6 +49,7 @@ function parseArgs(argv) {
     deadlineOffset: DEFAULT_DEADLINE_OFFSET_BLOCKS,
     estimate: false,
     programHex: process.env.MISSION_PROGRAM_HEX ?? '',
+    missionIds: [],
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -64,6 +70,9 @@ function parseArgs(argv) {
       case '--deadline-offset':
         opts.deadlineOffset = Number(argv[++i]);
         break;
+      case '--mission':
+        opts.missionIds.push(String(argv[++i] ?? '').toUpperCase());
+        break;
       case '--estimate':
         opts.estimate = true;
         break;
@@ -76,11 +85,14 @@ function parseArgs(argv) {
     }
   }
 
-  if (opts.deadlineBlock != null && !Number.isSafeInteger(opts.deadlineBlock)) {
-    throw new Error('--deadline-block must be an integer');
+  if (opts.deadlineBlock != null && (!Number.isSafeInteger(opts.deadlineBlock) || opts.deadlineBlock <= 0)) {
+    throw new Error('--deadline-block must be a positive integer');
   }
   if (!Number.isSafeInteger(opts.deadlineOffset) || opts.deadlineOffset <= 0) {
     throw new Error('--deadline-offset must be a positive integer');
+  }
+  if (opts.missionIds.some((id) => id.length === 0)) {
+    throw new Error('--mission requires an id');
   }
 
   return opts;
@@ -164,6 +176,81 @@ function formatVara(raw) {
   return `${whole}.${frac.toString().padStart(12, '0').replace(/0+$/, '')}`;
 }
 
+function byteLength(value) {
+  return Buffer.byteLength(String(value), 'utf8');
+}
+
+function validateTemplate(template, seenIds) {
+  if (!template || typeof template !== 'object') {
+    throw new Error('mission template must be an object');
+  }
+
+  const id = String(template.id ?? '').toUpperCase();
+  if (!id) throw new Error('mission template id is required');
+  if (seenIds.has(id)) throw new Error(`duplicate mission id: ${id}`);
+  seenIds.add(id);
+
+  for (const [field, maxBytes] of [
+    ['title', MAX_TITLE_BYTES],
+    ['instructions', MAX_INSTRUCTIONS_BYTES],
+    ['requiredAction', MAX_ACTION_BYTES],
+  ]) {
+    if (typeof template[field] !== 'string' || template[field].trim() === '') {
+      throw new Error(`${id}.${field} must be a non-empty string`);
+    }
+    if (byteLength(template[field]) > maxBytes) {
+      throw new Error(`${id}.${field} exceeds ${maxBytes} bytes`);
+    }
+  }
+
+  try {
+    if (BigInt(template.rewardRaw) <= 0n) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error(`${id}.rewardRaw must be a positive integer string`);
+  }
+
+  if (
+    !Number.isSafeInteger(template.maxApprovals) ||
+    template.maxApprovals <= 0 ||
+    template.maxApprovals > MAX_APPROVALS_PER_MISSION
+  ) {
+    throw new Error(
+      `${id}.maxApprovals must be an integer from 1 to ${MAX_APPROVALS_PER_MISSION}`,
+    );
+  }
+
+  if (
+    template.targetProgramRef != null &&
+    typeof template.targetProgramRef !== 'string'
+  ) {
+    throw new Error(`${id}.targetProgramRef must be a string or null`);
+  }
+}
+
+function loadTemplates(selectedIds) {
+  const templates = JSON.parse(readFileSync(templatesPath, 'utf8'));
+  if (!Array.isArray(templates)) {
+    throw new Error('mission templates file must contain an array');
+  }
+
+  const seenIds = new Set();
+  for (const template of templates) {
+    validateTemplate(template, seenIds);
+  }
+
+  if (selectedIds.length === 0) return templates;
+
+  const selected = new Set(selectedIds);
+  const unknown = selectedIds.filter((id) => !seenIds.has(id));
+  if (unknown.length > 0) {
+    throw new Error(`unknown mission id(s): ${unknown.join(', ')}`);
+  }
+
+  return templates.filter((template) => selected.has(String(template.id).toUpperCase()));
+}
+
 function buildMission(template, env, programHex, deadlineBlock) {
   const targetProgram = refValue(template.targetProgramRef, env, programHex);
   if (targetProgram != null) {
@@ -232,8 +319,8 @@ async function main() {
   const network = env.VARA_NETWORK ?? 'mainnet';
   const account = env.ACCT ?? 'agent-arena';
   const idl = path.join(root, 'programs/aan-missions/target/wasm32-gear/release/aan_missions.idl');
+  const templates = loadTemplates(opts.missionIds);
   const deadlineBlock = opts.deadlineBlock ?? (await fetchChainTip(endpoint)) + opts.deadlineOffset;
-  const templates = JSON.parse(readFileSync(templatesPath, 'utf8'));
   const missions = templates.map((template) => buildMission(template, env, programHex, deadlineBlock));
 
   mkdirSync(opts.outDir, { recursive: true });
@@ -248,6 +335,7 @@ async function main() {
   console.log(`program:  ${programHex}`);
   console.log(`deadline: ${deadlineBlock}`);
   console.log(`out dir:  ${opts.outDir}`);
+  console.log(`missions: ${missions.map((mission) => mission.id).join(', ')}`);
   console.log(`total pool: ${formatVara(totalPoolRaw.toString())} VARA`);
   console.log();
   printTable(missions);
