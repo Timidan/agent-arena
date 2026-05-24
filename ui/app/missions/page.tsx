@@ -160,7 +160,7 @@ export default async function MissionsPage() {
     fetchMissionLiveSnapshot(snapshot.programHex),
   ]);
   const fundedMissions = snapshot.launchMissions.filter((mission) => mission.funded);
-  const queuedMissions = snapshot.launchMissions.filter((mission) => !mission.funded);
+  const openMissionRows = fundedMissions.length > 0 ? fundedMissions : snapshot.launchMissions;
   const usingSeededLedger = !live.available && fundedMissions.length > 0;
   const ledgerStats = live.stats ?? snapshot.seededStats;
   const ledgerMissions = live.missions.length > 0
@@ -294,7 +294,7 @@ export default async function MissionsPage() {
                 <h2 className={SECTION_TITLE_CLASS}>Open Missions</h2>
               </div>
               <span className="font-mono text-[11px] text-[#6F6B63]">
-                {fundedMissions.length} live, {queuedMissions.length} queued
+                {openMissionRows.length} live
               </span>
             </div>
 
@@ -306,7 +306,7 @@ export default async function MissionsPage() {
               </div>
 
               <div className="divide-y divide-[#D8D0C3]">
-                {snapshot.launchMissions.map((mission) => (
+                {openMissionRows.map((mission) => (
                   <article
                     key={mission.id}
                     className="grid grid-cols-1 gap-3 px-4 py-4 transition-colors hover:bg-[#F6EFE3] md:grid-cols-[72px_1.1fr_0.8fr_1fr_90px_80px_86px]"

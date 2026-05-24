@@ -39,6 +39,9 @@ export interface MissionControlSnapshot {
 
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const VERIFIER_MODES = new Set(["disabled", "read-only", "approvals"]);
+const DEFAULT_MISSION_PROGRAM_HEX = "0x5a94f7ce047f9480c5b84afee1681a5fa82654f1029254bed5bf28d3e1b7a4d0";
+const DEFAULT_MISSION_FUNDED_IDS = "M1,M2,M3";
+const DEFAULT_MISSION_VERIFIER_MODE = "read-only";
 
 function csvSet(value: string | undefined): Set<string> {
   return new Set(
@@ -58,13 +61,17 @@ function multiplyRaw(raw: string, count: number): string {
 }
 
 export function getMissionControlSnapshot(): MissionControlSnapshot {
-  const configuredHex = process.env.NEXT_PUBLIC_MISSION_PROGRAM_HEX?.trim() ?? "";
-  const programHex = HEX_32.test(configuredHex) ? configuredHex : null;
-  const configuredVerifierMode = process.env.NEXT_PUBLIC_MISSION_VERIFIER_MODE ?? "disabled";
+  const configuredHex = process.env.NEXT_PUBLIC_MISSION_PROGRAM_HEX?.trim();
+  const effectiveHex = configuredHex || DEFAULT_MISSION_PROGRAM_HEX;
+  const configuredVerifierMode =
+    process.env.NEXT_PUBLIC_MISSION_VERIFIER_MODE?.trim() || DEFAULT_MISSION_VERIFIER_MODE;
+  const configuredFundedIds =
+    process.env.NEXT_PUBLIC_MISSION_FUNDED_IDS?.trim() || DEFAULT_MISSION_FUNDED_IDS;
+  const programHex = HEX_32.test(effectiveHex) ? effectiveHex : null;
   const verifierMode = VERIFIER_MODES.has(configuredVerifierMode)
     ? (configuredVerifierMode as MissionControlSnapshot["verifierMode"])
     : "disabled";
-  const fundedIds = csvSet(process.env.NEXT_PUBLIC_MISSION_FUNDED_IDS);
+  const fundedIds = csvSet(configuredFundedIds);
   const launchMissions: LaunchMission[] = missionTemplates.map((mission) => {
     const id = mission.id.toUpperCase();
     const funded = fundedIds.has(id);
