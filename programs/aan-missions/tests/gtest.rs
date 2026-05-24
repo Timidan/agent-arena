@@ -274,3 +274,86 @@ async fn pending_proofs_and_stats_are_readable() {
     assert_eq!(stats.pending_proofs, 1);
     assert_eq!(stats.rewards_remaining, TWO_VARA);
 }
+
+#[tokio::test]
+async fn dashboard_history_pages_are_readable() {
+    let (_env, program) = deploy().await;
+    let mission_a = create_default_mission(&program).await;
+    let mission_b = create_default_mission(&program).await;
+    let mut service_client = program.aan_missions();
+
+    service_client
+        .claim_mission(mission_a)
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+    service_client
+        .submit_proof(mission_a, "0xapproved".to_string(), "good".to_string())
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+    service_client
+        .approve_proof(1)
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+
+    service_client
+        .claim_mission(mission_b)
+        .with_actor_id(AGENT_B_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+    service_client
+        .submit_proof(mission_b, "0xrejected".to_string(), "bad".to_string())
+        .with_actor_id(AGENT_B_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+    service_client
+        .reject_proof(2, "bad proof".to_string())
+        .with_actor_id(ADMIN_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let missions_a = service_client.get_missions(None, 1).await.unwrap();
+    assert_eq!(missions_a.items.len(), 1);
+    assert_eq!(missions_a.items[0].id, 1);
+    assert_eq!(missions_a.next_cursor, Some(2));
+
+    let missions_b = service_client
+        .get_missions(missions_a.next_cursor, 10)
+        .await
+        .unwrap();
+    assert_eq!(missions_b.items.len(), 1);
+    assert_eq!(missions_b.items[0].id, 2);
+
+    let claims = service_client.get_claims(None, 10).await.unwrap();
+    assert_eq!(claims.items.len(), 2);
+    assert_eq!(claims.items[0].claimant, ActorId::from(AGENT_A_ID));
+    assert_eq!(claims.items[1].claimant, ActorId::from(AGENT_B_ID));
+
+    let proofs = service_client.get_proofs(None, 10).await.unwrap();
+    assert_eq!(proofs.items.len(), 2);
+    assert_eq!(proofs.items[0].status, ProofStatus::Approved);
+    assert_eq!(proofs.items[1].status, ProofStatus::Rejected);
+
+    let records_a = service_client.get_agent_records(None, 1).await.unwrap();
+    assert_eq!(records_a.items.len(), 1);
+    assert_eq!(records_a.items[0].agent, ActorId::from(AGENT_A_ID));
+    assert_eq!(records_a.items[0].completed_count, 1);
+    assert_eq!(records_a.next_cursor, Some(1));
+
+    let records_b = service_client
+        .get_agent_records(records_a.next_cursor, 10)
+        .await
+        .unwrap();
+    assert_eq!(records_b.items.len(), 1);
+    assert_eq!(records_b.items[0].agent, ActorId::from(AGENT_B_ID));
+    assert_eq!(records_b.items[0].rejected_proof_count, 1);
+    assert_eq!(records_b.next_cursor, None);
+}

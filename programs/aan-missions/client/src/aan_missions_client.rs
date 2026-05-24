@@ -72,6 +72,16 @@ pub mod aan_missions {
             &self,
             agent: ActorId,
         ) -> sails_rs::client::PendingCall<io::GetAgentRecord, Self::Env>;
+        fn get_agent_records(
+            &self,
+            cursor: Option<u32>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetAgentRecords, Self::Env>;
+        fn get_claims(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetClaims, Self::Env>;
         fn get_claims_by_agent(
             &self,
             agent: ActorId,
@@ -82,6 +92,11 @@ pub mod aan_missions {
             &self,
             mission_id: u64,
         ) -> sails_rs::client::PendingCall<io::GetMission, Self::Env>;
+        fn get_missions(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetMissions, Self::Env>;
         fn get_open_missions(
             &self,
             cursor: Option<u64>,
@@ -96,6 +111,11 @@ pub mod aan_missions {
             &self,
             proof_id: u64,
         ) -> sails_rs::client::PendingCall<io::GetProof, Self::Env>;
+        fn get_proofs(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetProofs, Self::Env>;
         fn get_stats(&self) -> sails_rs::client::PendingCall<io::GetStats, Self::Env>;
     }
     pub struct AanMissionsImpl;
@@ -146,6 +166,20 @@ pub mod aan_missions {
         ) -> sails_rs::client::PendingCall<io::GetAgentRecord, Self::Env> {
             self.pending_call((agent,))
         }
+        fn get_agent_records(
+            &self,
+            cursor: Option<u32>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetAgentRecords, Self::Env> {
+            self.pending_call((cursor, limit))
+        }
+        fn get_claims(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetClaims, Self::Env> {
+            self.pending_call((cursor, limit))
+        }
         fn get_claims_by_agent(
             &self,
             agent: ActorId,
@@ -159,6 +193,13 @@ pub mod aan_missions {
             mission_id: u64,
         ) -> sails_rs::client::PendingCall<io::GetMission, Self::Env> {
             self.pending_call((mission_id,))
+        }
+        fn get_missions(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetMissions, Self::Env> {
+            self.pending_call((cursor, limit))
         }
         fn get_open_missions(
             &self,
@@ -180,6 +221,13 @@ pub mod aan_missions {
         ) -> sails_rs::client::PendingCall<io::GetProof, Self::Env> {
             self.pending_call((proof_id,))
         }
+        fn get_proofs(
+            &self,
+            cursor: Option<u64>,
+            limit: u32,
+        ) -> sails_rs::client::PendingCall<io::GetProofs, Self::Env> {
+            self.pending_call((cursor, limit))
+        }
         fn get_stats(&self) -> sails_rs::client::PendingCall<io::GetStats, Self::Env> {
             self.pending_call(())
         }
@@ -194,11 +242,15 @@ pub mod aan_missions {
         sails_rs::io_struct_impl!(RejectProof (proof_id: u64, reason: String) -> Result<(), super::Error>);
         sails_rs::io_struct_impl!(SubmitProof (mission_id: u64, proof_tx_hash: String, note: String) -> Result<u64, super::Error>);
         sails_rs::io_struct_impl!(GetAgentRecord (agent: ActorId) -> super::AgentRecord);
+        sails_rs::io_struct_impl!(GetAgentRecords (cursor: Option<u32>, limit: u32) -> super::AgentRecordPage);
+        sails_rs::io_struct_impl!(GetClaims (cursor: Option<u64>, limit: u32) -> super::ClaimPage);
         sails_rs::io_struct_impl!(GetClaimsByAgent (agent: ActorId, cursor: Option<u64>, limit: u32) -> super::ClaimPage);
         sails_rs::io_struct_impl!(GetMission (mission_id: u64) -> Option<super::Mission>);
+        sails_rs::io_struct_impl!(GetMissions (cursor: Option<u64>, limit: u32) -> super::MissionPage);
         sails_rs::io_struct_impl!(GetOpenMissions (cursor: Option<u64>, limit: u32) -> super::MissionPage);
         sails_rs::io_struct_impl!(GetPendingProofs (cursor: Option<u64>, limit: u32) -> super::ProofPage);
         sails_rs::io_struct_impl!(GetProof (proof_id: u64) -> Option<super::Proof>);
+        sails_rs::io_struct_impl!(GetProofs (cursor: Option<u64>, limit: u32) -> super::ProofPage);
         sails_rs::io_struct_impl!(GetStats () -> super::MissionStats);
     }
 }
@@ -260,6 +312,13 @@ pub struct AgentRecord {
     pub rejected_proof_count: u32,
     pub last_completed_block: u32,
     pub distinct_targets: Vec<ActorId>,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct AgentRecordPage {
+    pub items: Vec<AgentRecord>,
+    pub next_cursor: Option<u32>,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]

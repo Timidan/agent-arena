@@ -47,6 +47,11 @@ type AgentRecord = struct {
   distinct_targets: vec actor_id,
 };
 
+type AgentRecordPage = struct {
+  items: vec AgentRecord,
+  next_cursor: opt u32,
+};
+
 type ClaimPage = struct {
   items: vec Claim,
   next_cursor: opt u64,
@@ -135,10 +140,14 @@ service AanMissions {
   RejectProof : (proof_id: u64, reason: str) -> result (null, Error);
   SubmitProof : (mission_id: u64, proof_tx_hash: str, note: str) -> result (u64, Error);
   query GetAgentRecord : (agent: actor_id) -> AgentRecord;
+  query GetAgentRecords : (cursor: opt u32, limit: u32) -> AgentRecordPage;
+  query GetClaims : (cursor: opt u64, limit: u32) -> ClaimPage;
   query GetClaimsByAgent : (agent: actor_id, cursor: opt u64, limit: u32) -> ClaimPage;
   query GetMission : (mission_id: u64) -> opt Mission;
+  query GetMissions : (cursor: opt u64, limit: u32) -> MissionPage;
   query GetOpenMissions : (cursor: opt u64, limit: u32) -> MissionPage;
   query GetPendingProofs : (cursor: opt u64, limit: u32) -> ProofPage;
   query GetProof : (proof_id: u64) -> opt Proof;
+  query GetProofs : (cursor: opt u64, limit: u32) -> ProofPage;
   query GetStats : () -> MissionStats;
 };

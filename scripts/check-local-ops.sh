@@ -325,7 +325,24 @@ check_mission_config() {
 
   if [[ -f "$source_idl" ]]; then
     pass mission.sourceIdl "generated IDL exists"
-    for method in GetProof GetPendingProofs GetMission ApproveProof RejectProof; do
+    for method in \
+      GetMissions \
+      GetOpenMissions \
+      GetMission \
+      GetClaims \
+      GetClaimsByAgent \
+      GetProofs \
+      GetPendingProofs \
+      GetProof \
+      GetAgentRecords \
+      GetAgentRecord \
+      GetStats \
+      CreateMission \
+      ClaimMission \
+      SubmitProof \
+      ApproveProof \
+      RejectProof \
+      CloseMission; do
       if grep -q "$method" "$source_idl"; then
         pass "mission.sourceIdl.$method" "present"
       else

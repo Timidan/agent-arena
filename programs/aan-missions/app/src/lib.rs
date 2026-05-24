@@ -160,6 +160,14 @@ pub struct ProofPage {
 #[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
+pub struct AgentRecordPage {
+    pub items: Vec<AgentRecord>,
+    pub next_cursor: Option<u32>,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
 pub struct RewardPaid {
     pub proof_id: ProofId,
     pub mission_id: MissionId,
@@ -574,8 +582,58 @@ impl AanMissions {
     }
 
     #[export]
+    pub fn get_missions(&self, cursor: Option<MissionId>, limit: u32) -> MissionPage {
+        let state = self.state.borrow();
+        let start_id = cursor.unwrap_or(1);
+        let limit = limit.min(MAX_PAGE_LIMIT) as usize;
+        let mut items = Vec::new();
+
+        for (&id, mission) in state.missions.range(start_id..) {
+            if items.len() >= limit {
+                break;
+            }
+            items.push(mission.clone());
+            if id == u64::MAX {
+                break;
+            }
+        }
+
+        let next_cursor = if items.len() == limit {
+            items.last().and_then(|mission| mission.id.checked_add(1))
+        } else {
+            None
+        };
+        MissionPage { items, next_cursor }
+    }
+
+    #[export]
     pub fn get_mission(&self, mission_id: MissionId) -> Option<Mission> {
         self.state.borrow().missions.get(&mission_id).cloned()
+    }
+
+    #[export]
+    pub fn get_claims(&self, cursor: Option<ClaimId>, limit: u32) -> ClaimPage {
+        let state = self.state.borrow();
+        let start_id = cursor.unwrap_or(1);
+        let limit = limit.min(MAX_PAGE_LIMIT) as usize;
+        let mut items = Vec::new();
+
+        for (&id, claim) in state.claims.range(start_id..) {
+            if items.len() >= limit {
+                break;
+            }
+            items.push(claim.clone());
+            if id == u64::MAX {
+                break;
+            }
+        }
+
+        let next_cursor = if items.len() == limit {
+            items.last().and_then(|claim| claim.id.checked_add(1))
+        } else {
+            None
+        };
+        ClaimPage { items, next_cursor }
     }
 
     #[export]
@@ -632,6 +690,31 @@ impl AanMissions {
     }
 
     #[export]
+    pub fn get_proofs(&self, cursor: Option<ProofId>, limit: u32) -> ProofPage {
+        let state = self.state.borrow();
+        let start_id = cursor.unwrap_or(1);
+        let limit = limit.min(MAX_PAGE_LIMIT) as usize;
+        let mut items = Vec::new();
+
+        for (&id, proof) in state.proofs.range(start_id..) {
+            if items.len() >= limit {
+                break;
+            }
+            items.push(proof.clone());
+            if id == u64::MAX {
+                break;
+            }
+        }
+
+        let next_cursor = if items.len() == limit {
+            items.last().and_then(|proof| proof.id.checked_add(1))
+        } else {
+            None
+        };
+        ProofPage { items, next_cursor }
+    }
+
+    #[export]
     pub fn get_proof(&self, proof_id: ProofId) -> Option<Proof> {
         self.state.borrow().proofs.get(&proof_id).cloned()
     }
@@ -644,6 +727,30 @@ impl AanMissions {
             .get(&agent)
             .cloned()
             .unwrap_or_else(|| Self::empty_agent_record(agent))
+    }
+
+    #[export]
+    pub fn get_agent_records(&self, cursor: Option<u32>, limit: u32) -> AgentRecordPage {
+        let state = self.state.borrow();
+        let start_index = cursor.unwrap_or(0) as usize;
+        let limit = limit.min(MAX_PAGE_LIMIT) as usize;
+        let mut items = Vec::new();
+
+        for record in state.agent_records.values().skip(start_index) {
+            if items.len() >= limit {
+                break;
+            }
+            items.push(record.clone());
+        }
+
+        let read_count = start_index.saturating_add(items.len());
+        let next_cursor = if items.len() == limit && read_count < state.agent_records.len() {
+            u32::try_from(read_count).ok()
+        } else {
+            None
+        };
+
+        AgentRecordPage { items, next_cursor }
     }
 
     #[export]

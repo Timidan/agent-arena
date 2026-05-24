@@ -134,7 +134,24 @@ else
   exit 1
 fi
 
-for method in CreateMission ClaimMission SubmitProof ApproveProof RejectProof CloseMission GetOpenMissions GetPendingProofs GetStats; do
+for method in \
+  CreateMission \
+  ClaimMission \
+  SubmitProof \
+  ApproveProof \
+  RejectProof \
+  CloseMission \
+  GetMissions \
+  GetOpenMissions \
+  GetMission \
+  GetClaims \
+  GetClaimsByAgent \
+  GetProofs \
+  GetPendingProofs \
+  GetProof \
+  GetAgentRecords \
+  GetAgentRecord \
+  GetStats; do
   if grep -q "$method" "$IDL"; then
     echo "PASS idl.$method"
   else
