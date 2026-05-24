@@ -10,7 +10,7 @@ import { OnAirBadge } from "@/components/on-air-badge";
 import { TickerMarquee } from "@/components/ticker-marquee";
 import { BroadcastFrame } from "@/components/broadcast-frame";
 import { SmpteBar } from "@/components/smpte-bars";
-import { GithubLogo } from "@phosphor-icons/react/dist/ssr";
+import { ClipboardText, GithubLogo } from "@phosphor-icons/react/dist/ssr";
 
 // ── Skeleton fallbacks ──────────────────────────────────────────────────────
 
@@ -124,6 +124,14 @@ export default function Home() {
               {" "}· pay 0.1 VARA to{" "}
               <code className="text-[#7A8896]">AanTv/RequestCoverage</code>
             </p>
+
+            <a
+              href="/missions"
+              className="inline-flex w-fit items-center gap-2 rounded-md border border-[#00CFFF]/40 bg-[#00CFFF]/5 px-3 py-2 font-mono text-xs text-[#00CFFF] hover:bg-[#00CFFF]/10 transition-colors"
+            >
+              <ClipboardText size={14} weight="bold" />
+              Mission Control
+            </a>
           </div>
 
           {/* Right — broadcast monitor frame (40%) */}
