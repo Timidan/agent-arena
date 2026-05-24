@@ -46,8 +46,15 @@ export interface HandleResult {
   kind: 'Participant' | 'Application';
 }
 
-export interface AppMetric {
+export interface ApplicationInfo {
   programId: string;
+  handle: string;
+  operator: string | null;
+  idlUrl: string | null;
+}
+
+export interface AppMetric {
+  applicationId: string;
   seasonId: number;
   messagesSent: number;
   mentionCount: number;
@@ -69,6 +76,7 @@ export interface CoverageItem {
 // ── handle cache ──────────────────────────────────────────────────────────
 
 const handleCache = new Map<string, { result: HandleResult | null; fetchedAt: number }>();
+const applicationCache = new Map<string, { result: ApplicationInfo | null; fetchedAt: number }>();
 
 function cacheTtl(): number {
   return parseInt(process.env.HANDLE_CACHE_TTL_MS ?? '3600000', 10);
@@ -103,6 +111,22 @@ const INTERACTIONS_QUERY = gql`
   }
 `;
 
+const INTERACTION_BY_ID_QUERY = gql`
+  query InteractionById($id: String!) {
+    interactionById(id: $id) {
+      id
+      substrateBlockNumber
+      caller
+      callerHandle
+      callerKind
+      callee
+      calleeHandle
+      method
+      valuePaidRaw
+    }
+  }
+`;
+
 interface InteractionsQueryResult {
   allInteractions: {
     pageInfo: {
@@ -120,6 +144,35 @@ interface InteractionsQueryResult {
       method: string | null;
       valuePaidRaw: string | null;
     }[];
+  };
+}
+
+interface InteractionByIdQueryResult {
+  interactionById: {
+    id: string;
+    substrateBlockNumber: number;
+    caller: string;
+    callerHandle: string | null;
+    callerKind: string;
+    callee: string;
+    calleeHandle: string | null;
+    method: string | null;
+    valuePaidRaw: string | null;
+  } | null;
+}
+
+function mapInteractionNode(n: InteractionByIdQueryResult['interactionById']): Interaction | null {
+  if (!n) return null;
+  return {
+    id: n.id,
+    blockNumber: Number(n.substrateBlockNumber),
+    caller: n.caller,
+    callerHandle: n.callerHandle ?? null,
+    callerKind: n.callerKind,
+    callee: n.callee,
+    calleeHandle: n.calleeHandle ?? null,
+    method: n.method ?? null,
+    valuePaidRaw: n.valuePaidRaw ?? null,
   };
 }
 
@@ -156,6 +209,27 @@ export async function fetchInteractionsSinceBlock(
   } while (after);
 
   return interactions;
+}
+
+export async function fetchInteractionById(id: string): Promise<Interaction | null> {
+  const data = await client().request<InteractionByIdQueryResult>(
+    INTERACTION_BY_ID_QUERY,
+    { id },
+  );
+  return mapInteractionNode(data.interactionById);
+}
+
+export async function fetchInteractionByProofHash(proofTxHash: string): Promise<Interaction | null> {
+  const candidates = proofTxHash.startsWith('interaction:')
+    ? [proofTxHash]
+    : [`interaction:${proofTxHash}`, proofTxHash];
+
+  for (const id of candidates) {
+    const interaction = await fetchInteractionById(id);
+    if (interaction) return interaction;
+  }
+
+  return null;
 }
 
 // ── fetchChainTipBlock ────────────────────────────────────────────────────
@@ -272,12 +346,30 @@ const APPLICATION_QUERY = gql`
   }
 `;
 
+const APPLICATION_INFO_QUERY = gql`
+  query ApplicationInfoById($id: String!) {
+    applicationById(id: $id) {
+      id
+      handle
+      owner
+    }
+  }
+`;
+
 interface ParticipantQueryResult {
   participantById: { handle: string } | null;
 }
 
 interface ApplicationQueryResult {
   applicationById: { handle: string } | null;
+}
+
+interface ApplicationInfoQueryResult {
+  applicationById: {
+    id: string | null;
+    handle: string;
+    owner: string | null;
+  } | null;
 }
 
 export async function resolveHandle(hex: string): Promise<string | null> {
@@ -312,6 +404,41 @@ export async function resolveHandle(hex: string): Promise<string | null> {
 
   handleCache.set(hex, { result, fetchedAt: now });
   return result?.handle ?? null;
+}
+
+export async function fetchApplicationInfo(programId: string): Promise<ApplicationInfo | null> {
+  const key = programId.toLowerCase();
+  const now = Date.now();
+  const cached = applicationCache.get(key);
+  if (cached && now - cached.fetchedAt < cacheTtl()) {
+    return cached.result;
+  }
+
+  let result: ApplicationInfo | null = null;
+  try {
+    const data = await client().request<ApplicationInfoQueryResult>(
+      APPLICATION_INFO_QUERY,
+      { id: programId },
+    );
+    if (data.applicationById?.handle) {
+      result = {
+        programId: data.applicationById.id ?? programId,
+        handle: data.applicationById.handle,
+        operator: data.applicationById.owner ?? null,
+        idlUrl: null,
+      };
+    }
+  } catch {
+    // keep the caller resilient; live indexer misses must not crash the bot
+  }
+
+  applicationCache.set(key, { result, fetchedAt: now });
+  return result;
+}
+
+export async function resolveApplicationHandle(programId: string): Promise<string | null> {
+  const info = await fetchApplicationInfo(programId);
+  return info?.handle ?? null;
 }
 
 // ── fetchDigestData ───────────────────────────────────────────────────
@@ -484,7 +611,7 @@ export async function fetchDigestData(
 const APP_METRIC_QUERY = gql`
   query AppMetricById($id: String!) {
     appMetricById(id: $id) {
-      programId
+      applicationId
       seasonId
       messagesSent
       mentionCount
@@ -497,7 +624,7 @@ const APP_METRIC_QUERY = gql`
 
 interface AppMetricQueryResult {
   appMetricById: {
-    programId: string;
+    applicationId: string;
     seasonId: number;
     messagesSent: number;
     mentionCount: number;
@@ -513,7 +640,7 @@ export async function fetchAppMetric(appHex: string, seasonId = 1): Promise<AppM
     const data = await client().request<AppMetricQueryResult>(APP_METRIC_QUERY, { id });
     if (!data.appMetricById) return null;
     return {
-      programId: data.appMetricById.programId,
+      applicationId: data.appMetricById.applicationId,
       seasonId: data.appMetricById.seasonId,
       messagesSent: data.appMetricById.messagesSent,
       mentionCount: data.appMetricById.mentionCount,

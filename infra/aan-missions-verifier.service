@@ -1,6 +1,5 @@
 [Unit]
-Description=AAN-TV commentator bot (Vara A2A Agents Arena Season 1)
-Documentation=https://github.com/Timidan/agent-arena
+Description=AAN Missions verifier bot
 After=network-online.target
 Wants=network-online.target
 
@@ -12,10 +11,10 @@ WorkingDirectory=/home/agent/agent-arena/commentator
 EnvironmentFile=/home/agent/agent-arena/commentator/.env
 Environment=NODE_ENV=production
 Environment=PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStartPre=/usr/bin/test -f /home/agent/agent-arena/commentator/dist/index.js
-ExecStart=/usr/bin/node /home/agent/agent-arena/commentator/dist/index.js
-StandardOutput=append:/var/log/aan-tv/commentator.log
-StandardError=append:/var/log/aan-tv/commentator.err
+ExecStartPre=/usr/bin/test -f /home/agent/agent-arena/commentator/dist/mission-verifier-main.js
+ExecStart=/usr/bin/node /home/agent/agent-arena/commentator/dist/mission-verifier-main.js
+StandardOutput=append:/var/log/aan-tv/mission-verifier.log
+StandardError=append:/var/log/aan-tv/mission-verifier.err
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s

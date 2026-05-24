@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AAN-TV commentator bot health check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=aan-tv-commentator-health.service
+
+[Install]
+WantedBy=timers.target

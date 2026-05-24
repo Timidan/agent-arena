@@ -1,5 +1,6 @@
 # Rust
 target/
+.binpath
 **/*.rs.bk
 Cargo.lock.bak
 
@@ -7,19 +8,42 @@ Cargo.lock.bak
 node_modules/
 dist/
 .next/
+next-env.d.ts
 .env
 .env.local
+.env.*
+!.env.example
 
 # Wallets and secrets
 wallets/
 *.key
 voucher.txt
+*.log
 
 # OS
 .DS_Store
 *.swp
 
+# Local editor / agent state
+.agents/
+.codex/
+.vscode/
+
+# Local session / research notes
+docs/sessions/handoff-*.md
+docs/plans/2026-05-23-*.md
+docs/research-*.md
+docs/*-analysis-*.md
+docs/comparison-*.md
+docs/leaderboard-mechanics-*.md
+
 # Build artifacts
 *.opt.wasm
 *.wasm
 *.meta.txt
+
+# Runtime state
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

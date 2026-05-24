@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { postChatAsApplication, _resetRateLimitForTesting, type Executor } from './chat.js';
+import { markCovered, postChatAsApplication, _resetRateLimitForTesting, type Executor } from './chat.js';
 
 // ── minimal env setup ──────────────────────────────────────────────────────
 
@@ -20,8 +20,43 @@ beforeEach(() => {
   process.env.APP_HEX = '0x' + '2'.repeat(64);
   process.env.ACCT = 'test-account';
   process.env.NETWORK_IDL = '/tmp/fake.idl';
+  process.env.IDL = '/tmp/fake-aan-tv.idl';
   process.env.VOUCHER_ID = '0x' + 'a'.repeat(64);
+  delete process.env.MARK_COVERED_VOUCHER_ID;
   process.env.VARA_NETWORK = 'testnet';
+  process.env.CHECKPOINT_DB = ':memory:';
+  process.env.MAX_DAILY_CHAT_POSTS = '-1';
+  process.env.MAX_DAILY_MARK_COVERED_CALLS = '-1';
+  process.env.MAX_DAILY_PARTNER_CALLS = '-1';
+  process.env.MAX_DAILY_SPEND_RAW = '0';
+});
+
+describe('markCovered', () => {
+  it('does not attach the network voucher by default', async () => {
+    let receivedArgs: string[] = [];
+    const executor: Executor = async (_command, args) => {
+      receivedArgs = args;
+      return { stdout: JSON.stringify({ result: null, programMessage: null }) };
+    };
+
+    await markCovered(2n, 2364n, executor);
+
+    expect(receivedArgs).not.toContain('--voucher');
+  });
+
+  it('attaches MARK_COVERED_VOUCHER_ID when explicitly configured', async () => {
+    process.env.MARK_COVERED_VOUCHER_ID = '0x' + 'b'.repeat(64);
+    let receivedArgs: string[] = [];
+    const executor: Executor = async (_command, args) => {
+      receivedArgs = args;
+      return { stdout: JSON.stringify({ result: null, programMessage: null }) };
+    };
+
+    await markCovered(2n, 2364n, executor);
+
+    expect(receivedArgs).toContain('--voucher');
+    expect(receivedArgs).toContain(process.env.MARK_COVERED_VOUCHER_ID);
+  });
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────

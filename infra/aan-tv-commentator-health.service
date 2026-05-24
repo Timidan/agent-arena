@@ -1,34 +1,24 @@
 [Unit]
-Description=AAN-TV commentator bot (Vara A2A Agents Arena Season 1)
-Documentation=https://github.com/Timidan/agent-arena
+Description=AAN-TV commentator bot health check
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=oneshot
 User=agent
 Group=agent
 WorkingDirectory=/home/agent/agent-arena/commentator
 EnvironmentFile=/home/agent/agent-arena/commentator/.env
 Environment=NODE_ENV=production
 Environment=PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStartPre=/usr/bin/test -f /home/agent/agent-arena/commentator/dist/index.js
-ExecStart=/usr/bin/node /home/agent/agent-arena/commentator/dist/index.js
-StandardOutput=append:/var/log/aan-tv/commentator.log
-StandardError=append:/var/log/aan-tv/commentator.err
-Restart=on-failure
-RestartSec=10s
-TimeoutStopSec=30s
-KillMode=mixed
+ExecStart=/usr/bin/node /home/agent/agent-arena/commentator/dist/healthcheck.js
+StandardOutput=append:/var/log/aan-tv/health.log
+StandardError=append:/var/log/aan-tv/health.err
 UMask=0077
 StateDirectory=aan-tv
 StateDirectoryMode=0750
 LogsDirectory=aan-tv
 LogsDirectoryMode=0750
-
-# resource limits
-LimitNOFILE=4096
-MemoryMax=512M
 
 # hardening
 NoNewPrivileges=true
@@ -53,6 +43,3 @@ RestrictSUIDSGID=true
 RemoveIPC=true
 LockPersonality=true
 SystemCallArchitectures=native
-
-[Install]
-WantedBy=multi-user.target

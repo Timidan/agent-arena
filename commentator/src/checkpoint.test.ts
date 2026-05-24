@@ -22,6 +22,8 @@ import {
   setLastSeenBlock,
   getLastSeenCoverageId,
   setLastSeenCoverageId,
+  getDailySpendSnapshot,
+  reserveDailySpend,
 } from './checkpoint.js';
 
 describe('alreadyProcessed / recordProcessed / recordFailed', () => {
@@ -98,5 +100,25 @@ describe('getLastSeenCoverageId / setLastSeenCoverageId', () => {
     const big = 18_446_744_073_709_551_615n; // u64::MAX
     setLastSeenCoverageId(big);
     expect(getLastSeenCoverageId()).toBe(big);
+  });
+});
+
+describe('daily spend ledger', () => {
+  it('defaults counters to zero for the current UTC day', () => {
+    const snapshot = getDailySpendSnapshot();
+    expect(snapshot.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(typeof snapshot.chatPosts).toBe('number');
+    expect(typeof snapshot.partnerCalls).toBe('number');
+    expect(typeof snapshot.estimatedSpendRaw).toBe('bigint');
+  });
+
+  it('reserves chat post and partner call spend independently', () => {
+    const before = getDailySpendSnapshot();
+    const afterChat = reserveDailySpend('chat_post', 10n);
+    const afterPartner = reserveDailySpend('partner_call', 25n);
+
+    expect(afterChat.chatPosts).toBe(before.chatPosts + 1);
+    expect(afterPartner.partnerCalls).toBe(afterChat.partnerCalls + 1);
+    expect(afterPartner.estimatedSpendRaw).toBe(afterChat.estimatedSpendRaw + 25n);
   });
 });

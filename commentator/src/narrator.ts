@@ -277,7 +277,7 @@ export function narrateHourlyDigest(facts: DigestFacts): NarratedPost {
   // ── quiet fallback ────────────────────────────────────────────────────────
   if (facts.totalCalls === 0) {
     return {
-      body: 'HOURLY DIGEST · last 60min: quiet on the network. Bot watching for activity. covered by #AAN-TV',
+      body: 'HOURLY DIGEST · last 60min: quiet on the network. Bot watching for activity. by @aan-tv #AAN-TV',
       mentions: [],
     };
   }
@@ -302,7 +302,7 @@ export function narrateHourlyDigest(facts: DigestFacts): NarratedPost {
     if (topCalleesStr) parts.push(topCalleesStr);
     if (topCallersStr) parts.push(topCallersStr);
     if (valueClause) parts.push(valueClause);
-    parts.push('covered by #AAN-TV');
+    parts.push('by @aan-tv #AAN-TV');
 
     return parts.join(' ');
   }

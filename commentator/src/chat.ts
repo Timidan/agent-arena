@@ -17,6 +17,7 @@ import { writeFile, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
+import { reserveChatPostBudget, reserveMarkCoveredBudget } from './spend-guard.js';
 
 const execFile = promisify(_execFile);
 
@@ -95,6 +96,8 @@ export async function postChatAsApplication(
     throw new Error('VOUCHER_ID is not set — run ensureFresh() before posting');
   }
 
+  reserveChatPostBudget();
+
   // Author MUST be Application for messagesSent credit
   const author = { Application: appHex };
 
@@ -171,11 +174,12 @@ export async function markCovered(
   // Our program IDL (Sails), not the network IDL
   const idl = requireEnv('IDL');
 
-  // Guard: VOUCHER_ID must be set — crash early rather than silently failing
-  const voucherId = process.env.VOUCHER_ID;
-  if (!voucherId) {
-    throw new Error('VOUCHER_ID is not set — run ensureFresh() before marking covered');
-  }
+  // The shared hackathon voucher is scoped to the network program (PID) for
+  // Chat/Post. MarkCovered writes to our own AAN-TV program, so only attach a
+  // voucher when an app-specific one is explicitly configured.
+  const voucherId = process.env.MARK_COVERED_VOUCHER_ID;
+
+  reserveMarkCoveredBudget();
 
   // MarkCovered(coverage_id: u64, chat_msg_id: u64)
   const callArgs = [String(coverageId), String(chatMsgId)];
@@ -193,8 +197,11 @@ export async function markCovered(
       'AanTv/MarkCovered',
       '--args-file', tmpPath,
       '--idl', idl,
-      '--voucher', voucherId,
     ];
+
+    if (voucherId) {
+      varaArgs.push('--voucher', voucherId);
+    }
 
     const { stdout } = await executor('vara-wallet', varaArgs, { timeout: 60_000 });
 

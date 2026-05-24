@@ -12,6 +12,9 @@
  *   lastChatPostMs and waits. We do not need a separate tracker here.
  */
 
+import { execFile as _execFile } from 'child_process';
+import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 import { isSelfLoop } from './self-loop-guard.js';
 import {
   fetchInteractionsSinceBlock,
@@ -19,6 +22,7 @@ import {
   fetchCoverageQueue,
   fetchDigestData,
   resolveHandle,
+  resolveApplicationHandle,
   type Interaction,
 } from './indexer.js';
 import {
@@ -31,9 +35,17 @@ import {
   recordFailed,
   getLastDigestPostedAt,
   setLastDigestPostedAt,
+  alreadyHandledBoardSignCallback,
+  recordBoardSignCallback,
+  lastBoardCallbackMsForCaller,
 } from './checkpoint.js';
 import { postChatAsApplication, markCovered } from './chat.js';
 import { ensureFresh } from './voucher.js';
+import {
+  callRegisteredPartner,
+  findPartnerCallForProgram,
+  runIntegrationCycle,
+} from './integration-runner.js';
 import {
   narrateMarketResolved,
   narrateBountyCompleted,
@@ -45,6 +57,8 @@ import {
   type NarratedPost,
   type DigestFacts,
 } from './narrator.js';
+
+const execFileAsync = promisify(_execFile);
 
 // ── interesting-event allowlist ─────────────────────────────────────────────
 //
@@ -70,10 +84,14 @@ interface InterestingFilter {
 // ── Our AAN-TV cluster hexes (INBOUND calls to these always narrate per-event)
 // Includes APP_HEX (aan-tv) plus the three cluster programs.
 // Used for both the allowlist and for the per-event throttle decision.
+const AAN_TV_BOARD_HEX = '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d';
+const AAN_TV_TIP_HEX = '0x8ee1131a13a3c5857430cadcab9b4432ff5387afbcb113e80fc92ef6a3461a02';
+const AAN_TV_DATA_HEX = '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c';
+
 const CLUSTER_HEXES_STATIC = [
-  '0x693076b5931e1ee9a33d70069411b8e6e5bf809c4ff68435d1751c3446e9fc6d', // aan-tv-board
-  '0x8ee1131a13a3c5857430cadcab9b4432ff5387afbcb113e80fc92ef6a3461a02', // aan-tv-tip
-  '0xec8f2b2ecb27ea82bfe7565bf981db1749a61fc27558e80ae575eadf34530e5c', // aan-tv-data
+  AAN_TV_BOARD_HEX, // aan-tv-board
+  AAN_TV_TIP_HEX,   // aan-tv-tip
+  AAN_TV_DATA_HEX,  // aan-tv-data
 ];
 
 // All allowlisted handles (for fetchDigestData)
@@ -201,6 +219,265 @@ function displayHandle(handle: string | null, hex: string): string {
   return handle ?? hex.slice(0, 8) + '…';
 }
 
+function stripAt(handle: string): string {
+  return handle.startsWith('@') ? handle.slice(1) : handle;
+}
+
+function truncateUtf8(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
+  let out = s;
+  while (Buffer.byteLength(out + '…', 'utf8') > maxBytes) {
+    out = out.slice(0, -1);
+  }
+  return out + '…';
+}
+
+function shortTx(raw: string): string {
+  if (raw.length <= 18) return raw;
+  return `${raw.slice(0, 10)}…${raw.slice(-6)}`;
+}
+
+function hasBoardSignMethod(methodName: string | null): boolean {
+  const method = methodName?.toLowerCase();
+  return method === 'sign' || method === 'aan_tv_board/sign' || method === 'aantvboard/sign';
+}
+
+function boardPartnerCallbacksEnabled(): boolean {
+  return process.env.BOARD_PARTNER_CALLBACKS_ENABLED === 'true';
+}
+
+function isBoardSignInteraction(interaction: Interaction): boolean {
+  if (interaction.callee.toLowerCase() !== AAN_TV_BOARD_HEX.toLowerCase()) return false;
+  return interaction.method == null || hasBoardSignMethod(interaction.method);
+}
+
+function boardIdlPath(): string {
+  return (
+    process.env.AAN_TV_BOARD_IDL ??
+    fileURLToPath(new URL('../../docs/aan_tv_board.idl', import.meta.url))
+  );
+}
+
+interface BoardEntry {
+  id: number;
+  author: string;
+  thought: string;
+  block: number;
+}
+
+function parseBoardEntry(raw: unknown): BoardEntry | null {
+  const row = raw as Record<string, unknown>;
+  const id = Number(row['id']);
+  const author = row['author'];
+  const thought = row['thought'];
+  const block = Number(row['block']);
+
+  if (!Number.isFinite(id) || typeof author !== 'string' || typeof thought !== 'string') {
+    return null;
+  }
+
+  return {
+    id,
+    author,
+    thought,
+    block: Number.isFinite(block) ? block : 0,
+  };
+}
+
+// In-process cache of the full board entry list. ReadState is expensive
+// (returns ALL entries) and called from each board-Sign callback. Caching for
+// ~45s collapses a bulk-sign burst into one ReadState instead of N.
+let boardEntriesCache: { entries: BoardEntry[]; fetchedAtMs: number } | null = null;
+const BOARD_ENTRIES_CACHE_TTL_MS = 45_000;
+
+async function fetchBoardEntries(): Promise<BoardEntry[]> {
+  const acct = process.env.ACCT;
+  if (!acct) throw new Error('fetchBoardEntries: ACCT env var is required');
+
+  const now = Date.now();
+  if (
+    boardEntriesCache !== null &&
+    now - boardEntriesCache.fetchedAtMs < BOARD_ENTRIES_CACHE_TTL_MS
+  ) {
+    return boardEntriesCache.entries;
+  }
+
+  const network = process.env.VARA_NETWORK ?? 'mainnet';
+  const { stdout } = await execFileAsync(
+    'vara-wallet',
+    [
+      '--account', acct,
+      '--network', network,
+      '--json',
+      'call',
+      AAN_TV_BOARD_HEX,
+      'AanTvBoard/ReadState',
+      '--idl', boardIdlPath(),
+    ],
+    { timeout: 30_000 },
+  );
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdout) as Record<string, unknown>;
+  } catch {
+    throw new Error(`ReadState returned non-JSON: ${stdout.slice(0, 200)}`);
+  }
+
+  if (parsed['programMessage'] != null) {
+    throw new Error(`ReadState panicked: ${JSON.stringify(parsed['programMessage'])}`);
+  }
+
+  const result = parsed['result'];
+  if (!Array.isArray(result)) return [];
+
+  const entries = result.map(parseBoardEntry).filter((entry): entry is BoardEntry => entry != null);
+  boardEntriesCache = { entries, fetchedAtMs: now };
+  return entries;
+}
+
+function pickBoardEntryForInteraction(
+  entries: BoardEntry[],
+  interaction: Interaction,
+  allowFallback: boolean,
+): BoardEntry | null {
+  const caller = interaction.caller.toLowerCase();
+  const candidates = entries
+    .filter((entry) => entry.author.toLowerCase() === caller)
+    .sort((a, b) => {
+      const byBlock = b.block - a.block;
+      if (byBlock !== 0) return byBlock;
+      return b.id - a.id;
+    });
+
+  if (candidates.length === 0) return null;
+
+  const exact = candidates.find((entry) => entry.block === interaction.blockNumber);
+  if (exact) return exact;
+
+  const near = candidates.find((entry) => Math.abs(entry.block - interaction.blockNumber) <= 10);
+  if (near) return near;
+
+  return allowFallback ? candidates[0] : null;
+}
+
+interface BoardSignCallbackResult {
+  handled: boolean;
+  status: 'posted' | 'duplicate' | 'failed' | 'not-board-sign';
+  msgId?: string;
+  txHash?: string;
+  error?: string;
+}
+
+async function handleBoardSignCallback(
+  interaction: Interaction,
+): Promise<BoardSignCallbackResult> {
+  if (!isBoardSignInteraction(interaction)) {
+    return { handled: false, status: 'not-board-sign' };
+  }
+
+  try {
+    const entries = await fetchBoardEntries();
+    const methodKnownSign = hasBoardSignMethod(interaction.method);
+    const entry = pickBoardEntryForInteraction(entries, interaction, methodKnownSign);
+    if (!entry) {
+      if (!methodKnownSign) {
+        return { handled: false, status: 'not-board-sign' };
+      }
+      return {
+        handled: true,
+        status: 'failed',
+        error: 'board entry not found for Sign interaction',
+      };
+    }
+
+    if (alreadyHandledBoardSignCallback(interaction.caller, entry.id)) {
+      console.log(
+        `[aan-tv] Board Sign callback already handled: caller=${interaction.caller} entry=${entry.id}`,
+      );
+      return { handled: true, status: 'duplicate' };
+    }
+
+    // Per-caller throttle: avoid 200-chat-post floods when a bounty hunter
+    // signs in bulk. Default 1 hour; tune via BOARD_CALLBACK_PER_CALLER_INTERVAL_MS.
+    const throttleMs = Number(
+      process.env.BOARD_CALLBACK_PER_CALLER_INTERVAL_MS ?? 60 * 60_000,
+    );
+    const lastCallbackMs = lastBoardCallbackMsForCaller(interaction.caller);
+    if (lastCallbackMs !== null && Date.now() - lastCallbackMs < throttleMs) {
+      console.log(
+        `[aan-tv] Board Sign callback throttled: caller=${interaction.caller} ` +
+          `last=${new Date(lastCallbackMs).toISOString()} window=${throttleMs}ms`,
+      );
+      recordBoardSignCallback(interaction.caller, entry.id, new Date().toISOString());
+      return { handled: true, status: 'duplicate' };
+    }
+
+    const applicationHandle = await resolveApplicationHandle(interaction.caller);
+    const callerHandle = applicationHandle ?? displayHandle(interaction.callerHandle, interaction.caller);
+    const callbackPartner = findPartnerCallForProgram(interaction.caller);
+    const callbackEnabled = boardPartnerCallbacksEnabled();
+    const callbackText = callbackPartner
+      ? callbackEnabled
+        ? `Calling back at ${callbackPartner.method}.`
+        : 'Verified callback exists; outbound callbacks are budget-paused.'
+      : 'No verified free callback registered yet.';
+
+    const quotedThought = truncateUtf8(entry.thought, 72);
+    const body = truncateUtf8(
+      `AanTvBoard/Sign: @${stripAt(callerHandle)} signed our board ("${quotedThought}"). ${callbackText} tx:${shortTx(interaction.id)}`,
+      240,
+    );
+
+    const mentionKind: 'Participant' | 'Application' =
+      applicationHandle || interaction.callerKind === 'Application' ? 'Application' : 'Participant';
+    const post = {
+      body,
+      mentions: [{ kind: mentionKind, hex: interaction.caller }],
+    };
+
+    const postResult = await postChatAsApplication(post);
+    recordBoardSignCallback(interaction.caller, entry.id, new Date().toISOString());
+    console.log(
+      `[aan-tv] Board Sign callback posted: caller=${callerHandle} entry=${entry.id} msgId=${postResult.msgId}`,
+    );
+
+    if (callbackPartner && callbackEnabled) {
+      try {
+        const callbackResult = await callRegisteredPartner(interaction.caller);
+        if (callbackResult?.status === 'failed') {
+          console.error(
+            `[aan-tv] Board Sign partner callback failed: ${callbackResult.key} ${callbackResult.error}`,
+          );
+        } else if (callbackResult) {
+          console.log(
+            `[aan-tv] Board Sign partner callback ${callbackResult.status}: ${callbackResult.key}`,
+          );
+        }
+      } catch (callbackErr) {
+        console.error('[aan-tv] Board Sign partner callback failed:', callbackErr);
+      }
+    } else if (callbackPartner) {
+      console.log(
+        `[aan-tv] Board Sign partner callback disabled by BOARD_PARTNER_CALLBACKS_ENABLED=false: ${callbackPartner.key}`,
+      );
+    }
+
+    return {
+      handled: true,
+      status: 'posted',
+      msgId: postResult.msgId,
+      txHash: postResult.txHash,
+    };
+  } catch (err) {
+    return {
+      handled: true,
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 function looksInteresting(i: Interaction): NarrationKind | null {
   for (const f of INTERESTING_FILTERS) {
     if (f.hex) {
@@ -313,8 +590,9 @@ async function tickCoverageQueue(): Promise<void> {
     if (item.chatMsgId != null) {
       // Advance cursor past this item so we don't re-check it every tick
       const itemId = BigInt(item.id);
-      if (itemId > getLastSeenCoverageId()) {
-        setLastSeenCoverageId(itemId);
+      const nextCursor = itemId + 1n;
+      if (nextCursor > getLastSeenCoverageId()) {
+        setLastSeenCoverageId(nextCursor);
       }
       continue;
     }
@@ -354,8 +632,9 @@ async function tickCoverageQueue(): Promise<void> {
 
       // Advance coverage cursor past this item
       const itemId = BigInt(item.id);
-      if (itemId > getLastSeenCoverageId()) {
-        setLastSeenCoverageId(itemId);
+      const nextCursor = itemId + 1n;
+      if (nextCursor > getLastSeenCoverageId()) {
+        setLastSeenCoverageId(nextCursor);
       }
     } catch (err) {
       console.error('[aan-tv] Failed to post coverage narration:', err);
@@ -369,11 +648,22 @@ async function tickCoverageQueue(): Promise<void> {
 export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
   const operatorHex = process.env.OPERATOR_HEX ?? '';
   const appHex = process.env.APP_HEX ?? '';
+  const integrationRunnerEnabled = process.env.INTEGRATION_RUNNER_ENABLED === 'true';
+  const integrationRunnerIntervalMs = Number(
+    process.env.INTEGRATION_RUNNER_INTERVAL_MS ?? 10 * 60_000,
+  );
+  let lastIntegrationCycleAt = 0;
 
   console.log('[aan-tv] Starting AAN-TV commentator watcher');
   console.log(`[aan-tv] APP_HEX: ${appHex}`);
   console.log(`[aan-tv] OPERATOR_HEX: ${operatorHex}`);
   console.log(`[aan-tv] Poll interval: ${opts.intervalMs}ms`);
+  console.log(
+    `[aan-tv] Integration runner: ${integrationRunnerEnabled ? 'enabled' : 'disabled'} interval=${integrationRunnerIntervalMs}ms`,
+  );
+  console.log(
+    `[aan-tv] Board partner callbacks: ${boardPartnerCallbacksEnabled() ? 'enabled' : 'disabled'}`,
+  );
 
   // Cold-start backfill — if checkpoint is 0 (fresh DB), seed to
   // chain tip - 100 so first tick processes recent history instead of all
@@ -456,6 +746,29 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
           continue;
         }
 
+        // Board-Sign reciprocity path. This replaces the generic cluster
+        // narration for Sign so one inbound board call gets exactly one reply.
+        if (isBoardSignInteraction(interaction)) {
+          if (getClusterHexes().includes(interaction.caller.toLowerCase())) {
+            console.log(`[aan-tv] Skipping own-cluster Board Sign ${interaction.id}`);
+            recordFailed(interaction.id, 'own-cluster board sign: skipped');
+            continue;
+          }
+
+          const callback = await handleBoardSignCallback(interaction);
+          if (callback.handled) {
+            if (callback.status === 'posted') {
+              recordProcessed(interaction.id, callback.msgId ?? '', callback.txHash ?? '');
+            } else if (callback.status === 'duplicate') {
+              recordProcessed(interaction.id, '', '');
+            } else {
+              console.error('[aan-tv] Board Sign callback failed:', callback.error);
+              recordFailed(interaction.id, callback.error ?? 'board sign callback failed');
+            }
+            continue;
+          }
+        }
+
         // Organic narration of interesting activity on known apps.
         // Per-event throttle: only narrate cluster-inbound or high-value calls.
         // Everything else is counted in the hourly digest instead.
@@ -525,11 +838,25 @@ export async function runWatcher(opts: { intervalMs: number }): Promise<never> {
           // Do NOT update setLastDigestPostedAt — retry next poll cycle
         }
       }
+
+      // 6. Dormant outbound integration runner — disabled by default.
+      const integrationNow = Date.now();
+      if (
+        integrationRunnerEnabled &&
+        integrationNow - lastIntegrationCycleAt >= integrationRunnerIntervalMs
+      ) {
+        lastIntegrationCycleAt = integrationNow;
+        try {
+          await runIntegrationCycle();
+        } catch (err) {
+          console.error('[aan-tv] Integration runner failed (will retry later):', err);
+        }
+      }
     } catch (err) {
       console.error('[aan-tv] Loop error (will retry):', err);
     }
 
-    // 6. Sleep
+    // 7. Sleep
     const elapsed = Date.now() - loopStart;
     const sleepMs = Math.max(0, opts.intervalMs - elapsed);
     console.log(`[aan-tv] Sleeping ${sleepMs}ms`);

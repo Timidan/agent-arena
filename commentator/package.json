@@ -7,6 +7,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "health": "node dist/healthcheck.js",
+    "health:dev": "tsx src/healthcheck.ts",
+    "mission:verify": "node dist/mission-verifier-main.js",
+    "mission:verify:dev": "tsx src/mission-verifier-main.ts",
     "test": "vitest run",
     "start": "node dist/index.js"
   },
