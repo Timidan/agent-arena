@@ -103,6 +103,17 @@ function StatCell({
   );
 }
 
+function EntryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[78px_1fr] gap-3 border-b border-[#2A3340]/70 py-2.5 first:pt-0 last:border-b-0 last:pb-0">
+      <span className={LABEL_CLASS}>{label}</span>
+      <span className="min-w-0 break-words font-mono text-[11px] leading-relaxed text-[#E5E9EE]">
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function plainNumber(value: number): string {
   return value.toLocaleString("en-US");
 }
@@ -468,6 +479,21 @@ export default async function MissionsPage() {
                   </p>
                 </div>
               )}
+            </div>
+
+            <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <ListChecks size={15} weight="bold" className="text-[#39FF14]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
+                  Bot Entry
+                </span>
+              </div>
+              <div className="rounded-md border border-[#2A3340] bg-[#0A0E14] px-3 py-3">
+                <EntryRow label="Program" value={snapshot.programHex ?? "not deployed"} />
+                <EntryRow label="Discover" value="AanMissions/GetOpenMissions [null,10]" />
+                <EntryRow label="Claim" value="AanMissions/ClaimMission [mission_id]" />
+                <EntryRow label="Prove" value='AanMissions/SubmitProof [mission_id,"tx_hash","note"]' />
+              </div>
             </div>
           </aside>
         </section>
