@@ -85,6 +85,10 @@ function lowerHex(value: string | null | undefined): string | null {
   return value ? value.toLowerCase() : null;
 }
 
+function normalizeProofTxHash(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 function normalizeStatus(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object') {
@@ -447,9 +451,22 @@ export async function runMissionVerifierCycle(
     deferred: 0,
     errors: [],
   };
+  const seenProofTxHashes = new Set<string>();
 
   for (const proof of proofs) {
     try {
+      const proofTxHash = normalizeProofTxHash(proof.proofTxHash);
+      if (proof.status === 'Pending' && proofTxHash) {
+        if (seenProofTxHashes.has(proofTxHash)) {
+          const reason = 'duplicate proof tx hash in pending page';
+          summary.rejected += 1;
+          console.log(`[mission-verifier] reject proof=${proof.id}: ${reason}`);
+          if (approvalsEnabled) await rejectProof(proof.id, reason, executor);
+          continue;
+        }
+        seenProofTxHashes.add(proofTxHash);
+      }
+
       const mission = await getMission(proof.missionId, executor);
       if (!mission) {
         summary.rejected += 1;

@@ -357,6 +357,36 @@ describe('runMissionVerifierCycle', () => {
     ]);
   });
 
+  it('rejects duplicate proof tx hashes in read-only mode without write calls', async () => {
+    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: ' 0XABC ' };
+    const walletCalls: WalletCall[] = [];
+    const executor = makeExecutor(
+      {
+        'AanMissions/GetPendingProofs': {
+          items: [proofRow(proof), proofRow(duplicateProof)],
+          next_cursor: null,
+        },
+      },
+      walletCalls,
+    );
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 2,
+      approved: 1,
+      rejected: 1,
+      deferred: 0,
+      errors: [],
+    });
+    expect(mockedFetchInteractionByProofHash).toHaveBeenCalledTimes(1);
+    expect(calledMethods(executor)).toEqual([
+      'AanMissions/GetPendingProofs',
+      'AanMissions/GetMission',
+    ]);
+    expect(walletCalls.map((call) => call.method)).not.toContain('AanMissions/RejectProof');
+  });
+
   it('submits approval and confirms proof state when approval mode is enabled', async () => {
     process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
     process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '10';
@@ -378,6 +408,45 @@ describe('runMissionVerifierCycle', () => {
       'AanMissions/ApproveProof',
       'AanMissions/GetProof',
     ]);
+  });
+
+  it('submits a rejection for duplicate proof tx hashes when approval writes are enabled', async () => {
+    process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
+    process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '20';
+    process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
+    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: '0XABC' };
+    const walletCalls: WalletCall[] = [];
+    const executor = makeExecutor(
+      {
+        'AanMissions/GetPendingProofs': {
+          items: [proofRow(proof), proofRow(duplicateProof)],
+          next_cursor: null,
+        },
+      },
+      walletCalls,
+    );
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 2,
+      approved: 1,
+      rejected: 1,
+      deferred: 0,
+      errors: [],
+    });
+    expect(mockedFetchInteractionByProofHash).toHaveBeenCalledTimes(1);
+    expect(calledMethods(executor)).toEqual([
+      'AanMissions/GetPendingProofs',
+      'AanMissions/GetMission',
+      'AanMissions/ApproveProof',
+      'AanMissions/GetProof',
+      'AanMissions/RejectProof',
+    ]);
+    const rejectCall = walletCalls.find((call) => call.method === 'AanMissions/RejectProof');
+    expect(rejectCall?.args[0]).toBe(duplicateProof.id);
+    expect(rejectCall?.args[1]).toContain('duplicate proof tx hash');
+    expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
   });
 
   it('does not write deferred proofs when the indexer has not caught up', async () => {
