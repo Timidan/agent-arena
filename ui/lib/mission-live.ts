@@ -35,6 +35,7 @@ export interface MissionLiveProof {
   status: string;
   note: string;
   proofTxHash: string;
+  submittedAtBlock: number;
 }
 
 export interface MissionLiveAgentRecord {
@@ -186,6 +187,7 @@ function parseProof(raw: unknown): MissionLiveProof | null {
     status: normalizeStatus(field(row, "status", "status")),
     note: stringField(row, "note", "note"),
     proofTxHash: stringField(row, "proof_tx_hash", "proofTxHash"),
+    submittedAtBlock: numberField(row, "submitted_at_block", "submittedAtBlock"),
   };
 }
 

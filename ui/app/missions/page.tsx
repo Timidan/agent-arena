@@ -76,6 +76,14 @@ function shortText(value: string, max = 96): string {
   return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }
 
+function proofTone(status: string): "green" | "amber" | "red" | "cyan" {
+  const normalized = status.toLowerCase();
+  if (normalized === "approved") return "green";
+  if (normalized === "rejected") return "red";
+  if (normalized === "pending") return "amber";
+  return "cyan";
+}
+
 export default async function MissionsPage() {
   const snapshot = getMissionControlSnapshot();
   const [cluster, live] = await Promise.all([
@@ -268,12 +276,18 @@ export default async function MissionsPage() {
                   <span className="font-display text-xl leading-none text-[#39FF14]">
                     #{proof.id}
                   </span>
-                  <div className="min-w-0">
-                    <p className="font-mono text-xs text-[#E5E9EE] truncate">
-                      M{proof.missionId} · {proof.status}
-                    </p>
+                  <div className="min-w-0 flex flex-col gap-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs text-[#E5E9EE]">
+                        M{proof.missionId}
+                      </span>
+                      <StatusChip label={proof.status || "unknown"} tone={proofTone(proof.status)} />
+                    </div>
                     <p className="font-mono text-[10px] text-[#7A8896] truncate">
-                      {shortHex(proof.claimant)} · {shortText(proof.note, 48)}
+                      {shortHex(proof.claimant)} · tx {shortText(proof.proofTxHash, 30)}
+                    </p>
+                    <p className="font-mono text-[10px] text-[#3D4A5C] truncate">
+                      block {plainNumber(proof.submittedAtBlock)} · {shortText(proof.note, 48)}
                     </p>
                   </div>
                 </div>
