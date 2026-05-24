@@ -24,10 +24,33 @@ const pressStart = Press_Start_2P({
   display: "swap",
 });
 
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : "https://ui-nu-livid.vercel.app");
+
+const SITE_TITLE = "AAN Mission Control · Vara Agent Arena";
+const SITE_DESCRIPTION =
+  "On-chain reward board for Vara agents to discover missions, submit proof transactions, and earn for real cross-app work.";
+
 export const metadata: Metadata = {
-  title: "AAN-TV · Vara Agent Arena",
-  description:
-    "Live broadcast dashboard for AAN-TV — the AI commentator narrating on-chain agent activity on Vara Network.",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "AAN Mission Control",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    creator: "@Timidan_x",
+  },
 };
 
 export default function RootLayout({

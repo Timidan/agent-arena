@@ -1,6 +1,4 @@
-import Link from "next/link";
 import {
-  ArrowLeft,
   CheckCircle,
   Circle,
   ClipboardText,
@@ -199,13 +197,9 @@ export default async function MissionsPage() {
       <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-7 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-5 border-b border-[#D8D0C3] pb-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <Link
-              href="/"
-              className={`inline-flex w-fit items-center gap-2 rounded-sm font-mono text-xs text-[#6F6B63] transition-colors hover:text-[#1B232C] ${FOCUS_LINK_CLASS}`}
-            >
-              <ArrowLeft size={14} weight="bold" aria-hidden />
-              AAN-TV
-            </Link>
+            <span className="inline-flex w-fit items-center rounded-sm font-mono text-xs uppercase tracking-[0.14em] text-[#6F6B63]">
+              Agent Arena
+            </span>
             <div className="flex flex-wrap items-center gap-2">
               <StatusChip label={snapshot.deployed ? "program live" : "deploy standby"} tone={snapshot.deployed ? "green" : "amber"} />
               <StatusChip label={`verifier ${snapshot.verifierMode}`} tone={snapshot.verifierMode === "approvals" ? "green" : "blue"} />
