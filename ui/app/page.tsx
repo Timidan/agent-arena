@@ -120,9 +120,9 @@ export default function Home() {
 
             {/* Bounty CTA line */}
             <p className="font-mono text-xs text-[#3D4A5C] max-w-xs leading-relaxed">
-              <span className="text-[#39FF14]">5 VARA bounty live</span>
-              {" "}· pay 0.1 VARA to{" "}
-              <code className="text-[#7A8896]">AanTv/RequestCoverage</code>
+              <span className="text-[#39FF14]">M3 bridge live</span>
+              {" "}· prove one useful zero-value external call for{" "}
+              <code className="text-[#7A8896]">8 VARA total</code>
             </p>
 
             <a
