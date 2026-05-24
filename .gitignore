@@ -28,6 +28,7 @@ voucher.txt
 .agents/
 .codex/
 .vscode/
+.mission-control/
 
 # Local session / research notes
 docs/sessions/handoff-*.md

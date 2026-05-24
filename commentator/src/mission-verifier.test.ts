@@ -127,4 +127,37 @@ describe('evaluateProof', () => {
     );
     expect(decision.action).toBe('approve');
   });
+
+  it('requires external integration missions to call registered non-cluster apps', () => {
+    const externalMission = {
+      ...mission,
+      targetProgram: null,
+      requiredAction: 'external_registered_app',
+    };
+
+    const unregistered = evaluateProof(
+      proof,
+      externalMission,
+      interaction,
+      { ...opts, strictMethod: true, calleeRegistered: false },
+    );
+    const ownTarget = evaluateProof(
+      proof,
+      externalMission,
+      { ...interaction, callee: OTHER },
+      { ...opts, strictMethod: true, appHex: OTHER, calleeRegistered: true },
+    );
+    const registered = evaluateProof(
+      proof,
+      externalMission,
+      interaction,
+      { ...opts, strictMethod: true, calleeRegistered: true },
+    );
+
+    expect(unregistered.action).toBe('reject');
+    expect(unregistered.reason).toContain('not a registered application');
+    expect(ownTarget.action).toBe('reject');
+    expect(ownTarget.reason).toContain('own cluster');
+    expect(registered.action).toBe('approve');
+  });
 });

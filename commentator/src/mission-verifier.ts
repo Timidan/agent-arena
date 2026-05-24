@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
+  fetchApplicationInfo,
   fetchChainTipBlock,
   fetchInteractionByProofHash,
   type Interaction,
@@ -48,6 +49,7 @@ export interface VerificationOptions {
   maxIndexerLagBlocks: number;
   strictMethod: boolean;
   chainTipBlock: number;
+  calleeRegistered?: boolean;
 }
 
 export type VerificationDecision =
@@ -172,6 +174,10 @@ function actionMatches(requiredAction: string, method: string | null): boolean {
   );
 }
 
+function requiresExternalRegisteredApp(requiredAction: string): boolean {
+  return requiredAction.trim().toLowerCase() === 'external_registered_app';
+}
+
 export function evaluateProof(
   proof: MissionVerifierProof,
   mission: MissionVerifierMission,
@@ -222,6 +228,24 @@ export function evaluateProof(
     };
   }
 
+  if (requiresExternalRegisteredApp(mission.requiredAction)) {
+    if (ownHexes(opts).has(interaction.callee.toLowerCase())) {
+      return {
+        action: 'reject',
+        reason: 'external mission cannot target our own cluster',
+        interaction,
+      };
+    }
+
+    if (opts.calleeRegistered !== true) {
+      return {
+        action: 'reject',
+        reason: 'external mission target is not a registered application',
+        interaction,
+      };
+    }
+  }
+
   if (interaction.blockNumber < mission.createdAtBlock) {
     return {
       action: 'reject',
@@ -238,7 +262,11 @@ export function evaluateProof(
     };
   }
 
-  if (opts.strictMethod && !actionMatches(mission.requiredAction, interaction.method)) {
+  if (
+    opts.strictMethod &&
+    !requiresExternalRegisteredApp(mission.requiredAction) &&
+    !actionMatches(mission.requiredAction, interaction.method)
+  ) {
     return {
       action: 'reject',
       reason: `method mismatch: expected ${mission.requiredAction}, got ${interaction.method ?? 'null'}`,
@@ -430,6 +458,9 @@ export async function runMissionVerifierCycle(
       }
 
       const interaction = await fetchInteractionByProofHash(proof.proofTxHash);
+      const calleeRegistered = interaction && requiresExternalRegisteredApp(mission.requiredAction)
+        ? Boolean(await fetchApplicationInfo(interaction.callee))
+        : undefined;
       const decision = evaluateProof(proof, mission, interaction, {
         operatorHex: process.env.OPERATOR_HEX,
         appHex: process.env.APP_HEX,
@@ -437,6 +468,7 @@ export async function runMissionVerifierCycle(
         maxIndexerLagBlocks: envNumber('MISSION_VERIFIER_MAX_INDEXER_LAG_BLOCKS', 2400),
         strictMethod: envBool('MISSION_VERIFIER_STRICT_METHOD', false),
         chainTipBlock,
+        calleeRegistered,
       });
 
       if (decision.action === 'defer') {

@@ -100,36 +100,28 @@ Estimate every mission before sending it. Use raw units for attached reward
 pools. For example, a 2 VARA reward with 10 approval slots needs
 `20000000000000` raw planck attached.
 
-Example M1 args file:
-
-```json
-[
-  {
-    "title": "Mission discovery loop",
-    "instructions": "Call AanMissions/GetOpenMissions and submit the tx hash from your bot loop.",
-    "target_program": "0xMISSION_PROGRAM_HEX",
-    "required_action": "AanMissions/GetOpenMissions",
-    "reward": "2000000000000",
-    "max_approvals": 10,
-    "deadline_block": 33100000
-  }
-]
-```
-
-Estimate first:
+Generate the first mission payloads after `MISSION_PROGRAM_HEX` is known:
 
 ```bash
-vara-wallet --network mainnet --account agent-arena \
-  call "$MISSION_PROGRAM_HEX" AanMissions/CreateMission \
-  --args-file /tmp/mission-m1.json \
-  --idl programs/aan-missions/target/wasm32-gear/release/aan_missions.idl \
-  --value 20000000000000 \
-  --units raw \
-  --estimate
+scripts/mission-control-bootstrap.mjs --program "$MISSION_PROGRAM_HEX"
 ```
 
-If the estimate succeeds and the mission is still desired, send the same command
-without `--estimate`.
+The script writes args files under `.mission-control/seed-missions/`, prints the
+total reward pool, and prints one no-write `--estimate` command per mission.
+It does not submit `CreateMission`.
+
+Run estimates for all first missions:
+
+```bash
+scripts/mission-control-bootstrap.mjs --program "$MISSION_PROGRAM_HEX" --estimate
+```
+
+If the estimates succeed and the mission set is still desired, send the printed
+commands one by one without `--estimate`. Start with M1/M2 before funding the
+full launch set.
+
+The initial mission templates live in
+`ui/lib/mission-templates.json`, which is also used by the dashboard.
 
 ## 6. Approval mode gate
 
