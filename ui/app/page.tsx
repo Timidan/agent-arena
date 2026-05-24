@@ -80,7 +80,7 @@ export default function Home() {
       {/* ── Ticker marquee — full width, above main container ─────────────── */}
       <TickerMarquee />
 
-      <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-10">
+      <main id="main-content" className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-10">
 
         {/* ── Hero: left brand 60% / right broadcast monitor 40% ───────── */}
         <section className="relative w-full flex flex-col md:flex-row gap-6 md:gap-10 items-stretch">
@@ -127,9 +127,9 @@ export default function Home() {
 
             <a
               href="/missions"
-              className="inline-flex w-fit items-center gap-2 rounded-md border border-[#00CFFF]/40 bg-[#00CFFF]/5 px-3 py-2 font-mono text-xs text-[#00CFFF] hover:bg-[#00CFFF]/10 transition-colors"
+              className="inline-flex w-fit items-center gap-2 rounded-md border border-[#00CFFF]/40 bg-[#00CFFF]/5 px-3 py-2 font-mono text-xs text-[#00CFFF] transition-colors hover:bg-[#00CFFF]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00CFFF]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0A0E14]"
             >
-              <ClipboardText size={14} weight="bold" />
+              <ClipboardText size={14} weight="bold" aria-hidden />
               Mission Control
             </a>
           </div>
@@ -190,9 +190,9 @@ export default function Home() {
               href="https://github.com/Timidan/agent-arena"
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 font-mono text-xs text-[#3D4A5C] hover:text-[#7A8896] transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-sm font-mono text-xs text-[#3D4A5C] transition-colors hover:text-[#7A8896] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#39FF14]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0A0E14]"
             >
-              <GithubLogo size={12} />
+              <GithubLogo size={12} aria-hidden />
               <span>source</span>
             </a>
           </div>

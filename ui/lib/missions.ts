@@ -54,5 +54,5 @@ export function getMissionControlSnapshot(): MissionControlSnapshot {
 
 export function shortHex(hex: string | null): string {
   if (!hex) return "not deployed";
-  return `${hex.slice(0, 10)}...${hex.slice(-6)}`;
+  return `${hex.slice(0, 10)}…${hex.slice(-6)}`;
 }

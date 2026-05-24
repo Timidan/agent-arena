@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   CheckCircle,
+  Circle,
   ClipboardText,
   Coins,
   Crosshair,
@@ -26,6 +27,13 @@ const STATUS_STYLES: Record<MissionStatus, string> = {
   blocked: "border-[#FF3838]/40 text-[#FF3838] bg-[#FF3838]/5",
 };
 
+const SECTION_TITLE_CLASS = "font-pixel text-[9px] uppercase tracking-widest text-[#E5E9EE]";
+const LABEL_CLASS = "font-mono text-[10px] uppercase tracking-wide text-[#3D4A5C]";
+const FOCUS_LINK_CLASS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#39FF14]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0A0E14]";
+
+type GateTone = "ready" | "standby" | "blocked";
+
 function StatusChip({
   label,
   tone,
@@ -41,9 +49,36 @@ function StatusChip({
   };
 
   return (
-    <span className={`inline-flex h-6 items-center rounded-md border px-2 font-mono text-[10px] uppercase tracking-wide ${tones[tone]}`}>
+    <span className={`inline-flex min-h-6 items-center rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-wide ${tones[tone]}`}>
       {label}
     </span>
+  );
+}
+
+function GateRow({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: GateTone;
+}) {
+  const toneClass = {
+    ready: "text-[#39FF14]",
+    standby: "text-[#FF9F1C]",
+    blocked: "text-[#FF3838]",
+  }[tone];
+  const Icon = tone === "ready" ? CheckCircle : tone === "standby" ? Circle : WarningCircle;
+
+  return (
+    <div className="grid grid-cols-[16px_1fr] gap-3 border-b border-[#2A3340]/70 pb-3 last:border-b-0 last:pb-0">
+      <Icon size={14} weight={tone === "ready" ? "fill" : "bold"} className={`mt-0.5 shrink-0 ${toneClass}`} aria-hidden />
+      <div className="min-w-0">
+        <p className="font-mono text-xs text-[#E5E9EE]">{label}</p>
+        <p className="break-words font-mono text-[11px] leading-relaxed text-[#7A8896]">{value}</p>
+      </div>
+    </div>
   );
 }
 
@@ -58,7 +93,7 @@ function StatCell({
 }) {
   return (
     <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 min-h-[104px] flex flex-col justify-between">
-      <span className="font-pixel text-[7px] uppercase tracking-widest text-[#7A8896]">
+      <span className="font-pixel text-[9px] uppercase tracking-widest text-[#7A8896]">
         {label}
       </span>
       <span className="font-display text-4xl leading-none tabular-nums" style={{ color: accent }}>
@@ -73,7 +108,7 @@ function plainNumber(value: number): string {
 }
 
 function shortText(value: string, max = 96): string {
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
 function proofTone(status: string): "green" | "amber" | "red" | "cyan" {
@@ -90,19 +125,42 @@ export default async function MissionsPage() {
     fetchClusterMetrics(),
     fetchMissionLiveSnapshot(snapshot.programHex),
   ]);
+  const rewardCapsConfigured = Number(snapshot.dailyRewardCapVara) > 0 && Number(snapshot.maxRewardVara) > 0;
+  const gateRows = [
+    {
+      label: "Program Deployment",
+      value: snapshot.deployed ? shortHex(snapshot.programHex) : "waiting for deployed Mission Control program ID",
+      tone: snapshot.deployed ? "ready" : "standby",
+    },
+    {
+      label: "Dashboard Reads",
+      value: live.available ? "reads confirmed through vara-wallet" : snapshot.deployed ? live.error ?? "reader unavailable" : "standby until deployment",
+      tone: live.available ? "ready" : snapshot.deployed ? "blocked" : "standby",
+    },
+    {
+      label: "Verifier Mode",
+      value: snapshot.verifierMode === "approvals" ? "approval writes armed" : snapshot.verifierMode === "read-only" ? "read-only verifier lane" : "approval writes disabled",
+      tone: snapshot.verifierMode === "approvals" ? "ready" : "standby",
+    },
+    {
+      label: "Reward Caps",
+      value: rewardCapsConfigured ? `${snapshot.maxRewardVara} VARA max, ${snapshot.dailyRewardCapVara} VARA daily cap` : "set explicit reward caps before launch",
+      tone: rewardCapsConfigured ? "ready" : "blocked",
+    },
+  ] satisfies Array<{ label: string; value: string; tone: GateTone }>;
 
   return (
     <>
       <TickerMarquee />
 
-      <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8">
+      <main id="main-content" className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8">
         <header className="flex flex-col gap-5">
           <div className="flex items-center justify-between gap-4">
             <Link
               href="/"
-              className="inline-flex items-center gap-2 font-mono text-xs text-[#7A8896] hover:text-[#39FF14] transition-colors"
+              className={`inline-flex items-center gap-2 rounded-sm font-mono text-xs text-[#7A8896] transition-colors hover:text-[#39FF14] ${FOCUS_LINK_CLASS}`}
             >
-              <ArrowLeft size={14} weight="bold" />
+              <ArrowLeft size={14} weight="bold" aria-hidden />
               Broadcast
             </Link>
             <div className="flex items-center gap-2">
@@ -120,8 +178,8 @@ export default async function MissionsPage() {
           <section className="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr] gap-6 items-stretch">
             <div className="flex flex-col justify-center gap-4 border border-[#2A3340] bg-[#0A0E14] rounded-lg p-6 min-h-[260px]">
               <div className="flex items-center gap-2">
-                <Crosshair size={18} weight="bold" className="text-[#00CFFF]" />
-                <span className="font-pixel text-[8px] uppercase tracking-widest text-[#00CFFF]">
+                <Crosshair size={18} weight="bold" className="text-[#00CFFF]" aria-hidden />
+                <span className={`${SECTION_TITLE_CLASS} text-[#00CFFF]`}>
                   Mission Control
                 </span>
               </div>
@@ -136,17 +194,17 @@ export default async function MissionsPage() {
               </h1>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                 <div className="border border-[#2A3340] rounded-md px-3 py-2">
-                  <p className="font-mono text-[10px] text-[#3D4A5C] uppercase">Program</p>
+                  <p className={LABEL_CLASS}>Program</p>
                   <p className="font-mono text-xs text-[#E5E9EE] truncate">
                     {shortHex(snapshot.programHex)}
                   </p>
                 </div>
                 <div className="border border-[#2A3340] rounded-md px-3 py-2">
-                  <p className="font-mono text-[10px] text-[#3D4A5C] uppercase">Reward Budget</p>
+                  <p className={LABEL_CLASS}>Reward Budget</p>
                   <p className="font-mono text-xs text-[#39FF14]">{snapshot.rewardBudgetVara} VARA</p>
                 </div>
                 <div className="border border-[#2A3340] rounded-md px-3 py-2">
-                  <p className="font-mono text-[10px] text-[#3D4A5C] uppercase">Daily Cap</p>
+                  <p className={LABEL_CLASS}>Daily Cap</p>
                   <p className="font-mono text-xs text-[#FF9F1C]">{snapshot.dailyRewardCapVara} VARA</p>
                 </div>
               </div>
@@ -154,8 +212,8 @@ export default async function MissionsPage() {
 
             <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-5 flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <Gauge size={15} weight="bold" className="text-[#39FF14]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <Gauge size={15} weight="bold" className="text-[#39FF14]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Live Network Baseline
                 </span>
               </div>
@@ -173,8 +231,8 @@ export default async function MissionsPage() {
           <div className="border border-[#2A3340] bg-[#0A0E14] rounded-lg p-5 flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <ListChecks size={15} weight="bold" className="text-[#00CFFF]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <ListChecks size={15} weight="bold" className="text-[#00CFFF]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Mission Ledger
                 </span>
               </div>
@@ -204,7 +262,7 @@ export default async function MissionsPage() {
             <div className="border border-[#2A3340] rounded-lg overflow-hidden">
               <div className="hidden md:grid grid-cols-[70px_1fr_110px_110px] gap-3 px-4 py-2 border-b border-[#2A3340] bg-[#111820]">
                 {["ID", "Mission", "Approved", "Pool"].map((head) => (
-                  <span key={head} className="font-mono text-[10px] uppercase text-[#3D4A5C]">
+                  <span key={head} className={LABEL_CLASS}>
                     {head}
                   </span>
                 ))}
@@ -218,7 +276,7 @@ export default async function MissionsPage() {
                     <span className="font-display text-2xl leading-none text-[#39FF14]">
                       {mission.id}
                     </span>
-                    <span className="font-mono text-xs text-[#E5E9EE]">
+                    <span className="min-w-0 font-mono text-xs text-[#E5E9EE] break-words">
                       {mission.title}
                     </span>
                     <span className="font-mono text-xs text-[#00CFFF]">
@@ -236,8 +294,8 @@ export default async function MissionsPage() {
           <aside className="flex flex-col gap-4">
             <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <Trophy size={15} weight="bold" className="text-[#39FF14]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <Trophy size={15} weight="bold" className="text-[#39FF14]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Agent Records
                 </span>
               </div>
@@ -259,15 +317,15 @@ export default async function MissionsPage() {
               ))}
               {live.agentRecords.length === 0 && (
                 <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
-                  No completed mission records yet.
+                  Completed agents appear after the verifier confirms real proofs.
                 </p>
               )}
             </div>
 
             <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <ClipboardText size={15} weight="bold" className="text-[#00CFFF]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <ClipboardText size={15} weight="bold" className="text-[#00CFFF]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Proof Trail
                 </span>
               </div>
@@ -294,7 +352,7 @@ export default async function MissionsPage() {
               ))}
               {live.proofs.length === 0 && (
                 <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
-                  No submitted proofs yet.
+                  Submitted tx hashes appear here before approval or rejection.
                 </p>
               )}
             </div>
@@ -305,12 +363,12 @@ export default async function MissionsPage() {
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between px-1">
               <div className="flex items-center gap-2">
-                <ClipboardText size={15} weight="bold" className="text-[#39FF14]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <ClipboardText size={15} weight="bold" className="text-[#39FF14]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Launch Missions
                 </span>
               </div>
-              <span className="font-mono text-[10px] text-[#7A8896]">
+              <span className="font-mono text-[11px] text-[#7A8896]">
                 {snapshot.launchMissions.length} queued
               </span>
             </div>
@@ -318,7 +376,7 @@ export default async function MissionsPage() {
             <div className="border border-[#2A3340] bg-[#0A0E14] rounded-lg overflow-hidden">
               <div className="hidden md:grid grid-cols-[80px_1.2fr_1fr_110px_100px] gap-3 px-4 py-2 border-b border-[#2A3340] bg-[#111820]">
                 {["ID", "Mission", "Target", "Reward", "Slots"].map((head) => (
-                  <span key={head} className="font-mono text-[10px] uppercase text-[#3D4A5C]">
+                  <span key={head} className={LABEL_CLASS}>
                     {head}
                   </span>
                 ))}
@@ -334,7 +392,7 @@ export default async function MissionsPage() {
                       <span className="font-display text-3xl leading-none text-[#39FF14]">
                         {mission.id}
                       </span>
-                      <span className={`inline-flex h-5 items-center rounded-sm border px-1.5 font-mono text-[9px] uppercase ${STATUS_STYLES[mission.status]}`}>
+                      <span className={`inline-flex min-h-5 items-center rounded-sm border px-1.5 py-0.5 font-mono text-[9px] uppercase ${STATUS_STYLES[mission.status]}`}>
                         {mission.status}
                       </span>
                     </div>
@@ -346,7 +404,7 @@ export default async function MissionsPage() {
                         {mission.action}
                       </p>
                     </div>
-                    <div className="font-mono text-xs text-[#00CFFF] flex items-center">
+                    <div className="min-w-0 break-words font-mono text-xs text-[#00CFFF] flex items-center">
                       {mission.target}
                     </div>
                     <div className="font-mono text-xs text-[#FF9F1C] flex items-center">
@@ -364,46 +422,36 @@ export default async function MissionsPage() {
           <aside className="flex flex-col gap-4">
             <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <ShieldCheck size={15} weight="bold" className="text-[#00CFFF]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
-                  Verification Gate
+                <ShieldCheck size={15} weight="bold" className="text-[#00CFFF]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
+                  Launch Gate
                 </span>
               </div>
-              {[
-                "claim exists",
-                "tx visible in indexer",
-                "caller matches claimant",
-                "target and action match",
-                "operator self-loop rejected",
-                "reward paid once",
-              ].map((item) => (
-                <div key={item} className="flex items-center gap-2">
-                  <CheckCircle size={13} weight="fill" className="text-[#39FF14] shrink-0" />
-                  <span className="font-mono text-xs text-[#7A8896]">{item}</span>
-                </div>
+              {gateRows.map((row) => (
+                <GateRow key={row.label} {...row} />
               ))}
             </div>
 
             <div className="border border-[#2A3340] bg-[#111820] rounded-lg p-4 flex flex-col gap-4">
               <div className="flex items-center gap-2">
-                <Coins size={15} weight="bold" className="text-[#FF9F1C]" />
-                <span className="font-pixel text-[7px] uppercase tracking-widest text-[#E5E9EE]">
+                <Coins size={15} weight="bold" className="text-[#FF9F1C]" aria-hidden />
+                <span className={SECTION_TITLE_CLASS}>
                   Reward Controls
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="border border-[#2A3340] rounded-md px-3 py-2">
-                  <p className="font-mono text-[10px] text-[#3D4A5C] uppercase">Max Reward</p>
+                  <p className={LABEL_CLASS}>Max Reward</p>
                   <p className="font-mono text-xs text-[#FF9F1C]">{snapshot.maxRewardVara} VARA</p>
                 </div>
                 <div className="border border-[#2A3340] rounded-md px-3 py-2">
-                  <p className="font-mono text-[10px] text-[#3D4A5C] uppercase">Approvals</p>
+                  <p className={LABEL_CLASS}>Approvals</p>
                   <p className="font-mono text-xs text-[#00CFFF]">{snapshot.verifierMode}</p>
                 </div>
               </div>
               {!snapshot.deployed && (
                 <div className="flex gap-2 rounded-md border border-[#FF9F1C]/30 bg-[#FF9F1C]/5 px-3 py-2">
-                  <WarningCircle size={14} weight="bold" className="text-[#FF9F1C] shrink-0 mt-0.5" />
+                  <WarningCircle size={14} weight="bold" className="text-[#FF9F1C] shrink-0 mt-0.5" aria-hidden />
                   <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
                     Contract deployment is pending; rewards remain locked until a Mission Control program ID is configured.
                   </p>

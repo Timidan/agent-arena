@@ -104,6 +104,10 @@
 
 /* ── Base layer ─────────────────────────────────────────────────────────── */
 @layer base {
+  html {
+    color-scheme: dark;
+    -webkit-tap-highlight-color: rgba(57, 255, 20, 0.18);
+  }
   * {
     @apply border-border outline-ring/50;
   }

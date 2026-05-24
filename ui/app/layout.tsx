@@ -40,6 +40,13 @@ export default function RootLayout({
       className={`${vt323.variable} ${ibmPlexMono.variable} ${pressStart.variable} dark`}
     >
       <body className="min-h-[100dvh] flex flex-col bg-[#0A0E14] text-[#E5E9EE] antialiased">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-md focus:border focus:border-[#39FF14]/60 focus:bg-[#111820] focus:px-3 focus:py-2 focus:font-mono focus:text-xs focus:text-[#39FF14] focus:shadow-lg"
+        >
+          Skip to main content
+        </a>
+
         {/* CRT scanline + VHS grain overlay — fixed, pointer-events-none, z-50 */}
         <div className="pointer-events-none fixed inset-0 z-50" aria-hidden>
           {/* Scanline overlay */}
