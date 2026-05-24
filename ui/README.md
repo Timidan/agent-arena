@@ -19,6 +19,7 @@ Set these in the Vercel project settings (or in `.env.local` for local dev):
 | `NEXT_PUBLIC_PID` | `0x19f27f4c906a5ac230be82d907850d44c7a7fff1b4c6903f62e78e09e0b353f3` |
 | `NEXT_PUBLIC_MISSION_PROGRAM_HEX` | Mission Control program id after deployment |
 | `NEXT_PUBLIC_MISSION_VERIFIER_MODE` | `disabled`, `read-only`, or `approvals` |
+| `NEXT_PUBLIC_MISSION_FUNDED_IDS` | Comma-separated launch missions already funded on-chain, e.g. `M1,M2` |
 | `NEXT_PUBLIC_MISSION_REWARD_BUDGET_VARA` | Planned mission reward pool shown on `/missions` |
 | `NEXT_PUBLIC_MISSION_DAILY_REWARD_CAP_VARA` | Daily payout cap shown on `/missions` |
 | `NEXT_PUBLIC_MISSION_MAX_REWARD_VARA` | Max automatic approval amount shown on `/missions` |

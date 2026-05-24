@@ -125,6 +125,14 @@ export default async function MissionsPage() {
     fetchClusterMetrics(),
     fetchMissionLiveSnapshot(snapshot.programHex),
   ]);
+  const seededLedgerMissions = snapshot.launchMissions.filter((mission) => mission.funded);
+  const usingSeededLedger = !live.available && seededLedgerMissions.length > 0;
+  const ledgerStats = live.stats ?? snapshot.seededStats;
+  const ledgerMissions = live.missions.length > 0
+    ? live.missions
+    : usingSeededLedger
+      ? seededLedgerMissions
+      : snapshot.launchMissions.slice(0, 3);
   const rewardCapsConfigured = Number(snapshot.dailyRewardCapVara) > 0 && Number(snapshot.maxRewardVara) > 0;
   const gateRows = [
     {
@@ -134,8 +142,8 @@ export default async function MissionsPage() {
     },
     {
       label: "Dashboard Reads",
-      value: live.available ? "reads confirmed through vara-wallet" : snapshot.deployed ? live.error ?? "reader unavailable" : "standby until deployment",
-      tone: live.available ? "ready" : snapshot.deployed ? "blocked" : "standby",
+      value: live.available ? "reads confirmed through vara-wallet" : usingSeededLedger ? "seeded launch state" : snapshot.deployed ? live.error ?? "reader unavailable" : "standby until deployment",
+      tone: live.available ? "ready" : usingSeededLedger ? "standby" : snapshot.deployed ? "blocked" : "standby",
     },
     {
       label: "Verifier Mode",
@@ -237,21 +245,21 @@ export default async function MissionsPage() {
                 </span>
               </div>
               <StatusChip
-                label={live.available ? "live reads" : live.source === "standby" ? "standby" : "reader offline"}
-                tone={live.available ? "green" : live.source === "standby" ? "amber" : "red"}
+                label={live.available ? "live reads" : usingSeededLedger ? "seeded launch" : live.source === "standby" ? "standby" : "reader offline"}
+                tone={live.available ? "green" : usingSeededLedger || live.source === "standby" ? "amber" : "red"}
               />
             </div>
 
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-              <StatCell label="Missions" value={plainNumber(live.stats?.totalMissions ?? 0)} />
-              <StatCell label="Open" value={plainNumber(live.stats?.openMissions ?? 0)} accent="#00CFFF" />
-              <StatCell label="Pending Proofs" value={plainNumber(live.stats?.pendingProofs ?? 0)} accent="#FF9F1C" />
-              <StatCell label="Approved" value={plainNumber(live.stats?.approvedProofs ?? 0)} accent="#39FF14" />
-              <StatCell label="Paid" value={formatVara(live.stats?.rewardsPaid ?? "0")} accent="#FF2D9C" />
-              <StatCell label="Remaining" value={formatVara(live.stats?.rewardsRemaining ?? "0")} accent="#E5E9EE" />
+              <StatCell label="Missions" value={plainNumber(ledgerStats?.totalMissions ?? 0)} />
+              <StatCell label="Open" value={plainNumber(ledgerStats?.openMissions ?? 0)} accent="#00CFFF" />
+              <StatCell label="Pending Proofs" value={plainNumber(ledgerStats?.pendingProofs ?? 0)} accent="#FF9F1C" />
+              <StatCell label="Approved" value={plainNumber(ledgerStats?.approvedProofs ?? 0)} accent="#39FF14" />
+              <StatCell label="Paid" value={formatVara(ledgerStats?.rewardsPaid ?? "0")} accent="#FF2D9C" />
+              <StatCell label="Remaining" value={formatVara(ledgerStats?.rewardsRemaining ?? "0")} accent="#E5E9EE" />
             </div>
 
-            {live.error && (
+            {live.error && !usingSeededLedger && (
               <div className="rounded-md border border-[#FF9F1C]/30 bg-[#FF9F1C]/5 px-3 py-2">
                 <p className="font-mono text-xs text-[#7A8896] leading-relaxed">
                   {shortText(live.error)}
@@ -268,7 +276,7 @@ export default async function MissionsPage() {
                 ))}
               </div>
               <div className="divide-y divide-[#2A3340]/70">
-                {(live.missions.length > 0 ? live.missions : snapshot.launchMissions.slice(0, 3)).map((mission) => (
+                {ledgerMissions.map((mission) => (
                   <article
                     key={mission.id}
                     className="grid grid-cols-1 md:grid-cols-[70px_1fr_110px_110px] gap-3 px-4 py-3"
@@ -283,7 +291,7 @@ export default async function MissionsPage() {
                       {"approvalsCount" in mission ? `${mission.approvalsCount}/${mission.maxApprovals}` : `0/${mission.maxApprovals}`}
                     </span>
                     <span className="font-mono text-xs text-[#FF9F1C]">
-                      {formatVara("remainingPool" in mission ? mission.remainingPool : mission.rewardRaw)}
+                      {formatVara("remainingPool" in mission ? mission.remainingPool : mission.fundedPoolRaw)}
                     </span>
                   </article>
                 ))}
