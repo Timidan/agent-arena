@@ -99,6 +99,31 @@ async fn create_mission_rejects_non_admin_and_refunds_value() {
 }
 
 #[tokio::test]
+async fn create_mission_refunds_overpay_and_rejects_underfunding() {
+    let (_env, program) = deploy().await;
+    let balance_before = program.balance();
+    let mut service_client = program.aan_missions();
+
+    let underfunded = service_client
+        .create_mission(mission_input(ONE_VARA, 2))
+        .with_actor_id(ADMIN_ID.into())
+        .with_value(ONE_VARA)
+        .await
+        .unwrap();
+    assert_eq!(underfunded, Err(Error::InsufficientPayment));
+    assert_eq!(program.balance(), balance_before);
+
+    let overpaid = service_client
+        .create_mission(mission_input(ONE_VARA, 2))
+        .with_actor_id(ADMIN_ID.into())
+        .with_value(TWO_VARA + ONE_VARA)
+        .await
+        .unwrap();
+    assert_eq!(overpaid, Ok(1));
+    assert_eq!(program.balance() - balance_before, TWO_VARA);
+}
+
+#[tokio::test]
 async fn claim_submit_and_approve_pays_once() {
     let (_env, program) = deploy().await;
     let mission_id = create_default_mission(&program).await;
@@ -148,6 +173,56 @@ async fn claim_submit_and_approve_pays_once() {
     assert_eq!(record.completed_count, 1);
     assert_eq!(record.total_rewards_earned, ONE_VARA);
     assert_eq!(record.distinct_targets, vec![ActorId::from(TARGET_ID)]);
+}
+
+#[tokio::test]
+async fn admin_only_routes_reject_non_admin_callers() {
+    let (_env, program) = deploy().await;
+    let mission_id = create_default_mission(&program).await;
+    let mut service_client = program.aan_missions();
+
+    service_client
+        .claim_mission(mission_id)
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+    service_client
+        .submit_proof(mission_id, "0xadminauth".to_string(), "proof".to_string())
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let approve = service_client
+        .approve_proof(1)
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(approve, Err(Error::Unauthorized));
+
+    let reject = service_client
+        .reject_proof(1, "not allowed".to_string())
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(reject, Err(Error::Unauthorized));
+
+    let close = service_client
+        .close_mission(mission_id)
+        .with_actor_id(AGENT_A_ID.into())
+        .await
+        .unwrap();
+    assert_eq!(close, Err(Error::Unauthorized));
+
+    let proof = service_client.get_proof(1).await.unwrap().unwrap();
+    assert_eq!(proof.status, ProofStatus::Pending);
+    let mission = service_client
+        .get_mission(mission_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!mission.closed);
 }
 
 #[tokio::test]
