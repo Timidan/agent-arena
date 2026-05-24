@@ -1,0 +1,219 @@
+type RewardPaid = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claimant: actor_id,
+  amount: u128,
+};
+
+type Error = enum {
+  Unauthorized,
+  InvalidArg,
+  InsufficientPayment,
+  MissionNotFound,
+  MissionClosed,
+  MissionExpired,
+  MissionFull,
+  ClaimNotFound,
+  DuplicateClaim,
+  DuplicateProof,
+  ProofNotFound,
+  WrongStatus,
+  RewardPoolEmpty,
+  ArithmeticOverflow,
+  PayoutFailed,
+};
+
+type RefundAmount = struct {
+  mission_id: u64,
+  amount: u128,
+};
+
+type MissionInput = struct {
+  title: str,
+  instructions: str,
+  target_program: opt actor_id,
+  required_action: str,
+  max_participant_value: u128,
+  reward: u128,
+  max_approvals: u32,
+  deadline_block: u32,
+};
+
+type AgentRecord = struct {
+  agent: actor_id,
+  completed_count: u32,
+  total_rewards_earned: u128,
+  rejected_proof_count: u32,
+  last_completed_block: u32,
+  distinct_targets: vec actor_id,
+};
+
+type AgentRecordPage = struct {
+  items: vec AgentRecord,
+  next_cursor: opt u32,
+};
+
+type ClaimPage = struct {
+  items: vec Claim,
+  next_cursor: opt u64,
+};
+
+type Claim = struct {
+  id: u64,
+  mission_id: u64,
+  claimant: actor_id,
+  claimed_at_block: u32,
+  status: ClaimStatus,
+  latest_proof_id: opt u64,
+};
+
+type ClaimStatus = enum {
+  Claimed,
+  ProofPending,
+  Approved,
+  Rejected,
+};
+
+type Mission = struct {
+  id: u64,
+  title: str,
+  instructions: str,
+  target_program: opt actor_id,
+  required_action: str,
+  max_participant_value: u128,
+  reward: u128,
+  max_approvals: u32,
+  approvals_count: u32,
+  deadline_block: u32,
+  created_at_block: u32,
+  closed: bool,
+  funded_pool: u128,
+  remaining_pool: u128,
+};
+
+type MissionPage = struct {
+  items: vec Mission,
+  next_cursor: opt u64,
+};
+
+type ProofPage = struct {
+  items: vec Proof,
+  next_cursor: opt u64,
+};
+
+type Proof = struct {
+  id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  proof_tx_hash: str,
+  note: str,
+  submitted_at_block: u32,
+  status: ProofStatus,
+  rejection_reason: opt str,
+};
+
+type ProofStatus = enum {
+  Pending,
+  Approved,
+  Rejected,
+};
+
+type MissionStats = struct {
+  total_missions: u64,
+  open_missions: u64,
+  total_claims: u64,
+  pending_proofs: u64,
+  approved_proofs: u64,
+  rejected_proofs: u64,
+  rewards_paid: u128,
+  rewards_remaining: u128,
+};
+
+type MissionCreatedEvent = struct {
+  mission_id: u64,
+  admin: actor_id,
+  title: str,
+  target_program: opt actor_id,
+  max_participant_value: u128,
+  reward: u128,
+  max_approvals: u32,
+  funded_pool: u128,
+  deadline_block: u32,
+};
+
+type MissionClaimedEvent = struct {
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+};
+
+type ProofSubmittedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  proof_tx_hash: str,
+};
+
+type ProofApprovedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  amount: u128,
+};
+
+type ProofRejectedEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claim_id: u64,
+  claimant: actor_id,
+  reason: str,
+};
+
+type MissionClosedEvent = struct {
+  mission_id: u64,
+  refund_amount: u128,
+};
+
+type RewardPaidEvent = struct {
+  proof_id: u64,
+  mission_id: u64,
+  claimant: actor_id,
+  amount: u128,
+};
+
+constructor {
+  Create : ();
+};
+
+service AanMissions {
+  ApproveProof : (proof_id: u64) -> result (RewardPaid, Error);
+  ClaimMission : (mission_id: u64) -> result (u64, Error);
+  CloseMission : (mission_id: u64) -> result (RefundAmount, Error);
+  CreateMission : (input: MissionInput) -> result (u64, Error);
+  RejectProof : (proof_id: u64, reason: str) -> result (null, Error);
+  SubmitProof : (mission_id: u64, proof_tx_hash: str, note: str) -> result (u64, Error);
+  query GetAgentRecord : (agent: actor_id) -> AgentRecord;
+  query GetAgentRecords : (cursor: opt u32, limit: u32) -> AgentRecordPage;
+  query GetClaims : (cursor: opt u64, limit: u32) -> ClaimPage;
+  query GetClaimsByAgent : (agent: actor_id, cursor: opt u64, limit: u32) -> ClaimPage;
+  query GetMission : (mission_id: u64) -> opt Mission;
+  query GetMissions : (cursor: opt u64, limit: u32) -> MissionPage;
+  query GetOpenMissions : (cursor: opt u64, limit: u32) -> MissionPage;
+  query GetPendingProofs : (cursor: opt u64, limit: u32) -> ProofPage;
+  query GetProof : (proof_id: u64) -> opt Proof;
+  query GetProofs : (cursor: opt u64, limit: u32) -> ProofPage;
+  query GetStats : () -> MissionStats;
+
+  events {
+    MissionCreated: MissionCreatedEvent;
+    MissionClaimed: MissionClaimedEvent;
+    ProofSubmitted: ProofSubmittedEvent;
+    ProofApproved: ProofApprovedEvent;
+    ProofRejected: ProofRejectedEvent;
+    MissionClosed: MissionClosedEvent;
+    RewardPaid: RewardPaidEvent;
+  }
+};
