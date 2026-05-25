@@ -8,11 +8,20 @@ import {
   fetchApplicationInfo,
   fetchChainTipBlock,
   fetchInteractionByProofHash,
+  resolveHandle,
   type Interaction,
 } from './indexer.js';
 import { postChatAsApplication, type Executor } from './chat.js';
 import { ensureFresh } from './voucher.js';
 import { reserveMissionVerifierCallBudget } from './spend-guard.js';
+import {
+  getLastSeenMissionClaimId,
+  getLastSeenMissionProofId,
+  missionActivityAlreadyProcessed,
+  recordMissionActivity,
+  setLastSeenMissionClaimId,
+  setLastSeenMissionProofId,
+} from './checkpoint.js';
 
 const execFile = promisify(_execFile);
 
@@ -29,6 +38,15 @@ export interface MissionVerifierProof {
   note: string;
   submittedAtBlock: number;
   status: 'Pending' | 'Approved' | 'Rejected' | string;
+}
+
+export interface MissionVerifierClaim {
+  id: string;
+  missionId: string;
+  claimant: string;
+  claimedAtBlock: number;
+  status: 'Claimed' | 'ProofPending' | 'Approved' | 'Rejected' | string;
+  latestProofId: string | null;
 }
 
 export interface MissionVerifierMission {
@@ -60,6 +78,11 @@ export type VerificationDecision =
 
 interface ProofPage {
   items: MissionVerifierProof[];
+  nextCursor: string | null;
+}
+
+interface ClaimPage {
+  items: MissionVerifierClaim[];
   nextCursor: string | null;
 }
 
@@ -147,7 +170,23 @@ export function parseProof(raw: unknown): MissionVerifierProof | null {
   };
 }
 
-function ownHexes(opts: VerificationOptions): Set<string> {
+export function parseClaim(raw: unknown): MissionVerifierClaim | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const id = stringField(row, 'id', 'id');
+  if (!id) return null;
+  const latestProofId = row['latest_proof_id'] ?? row['latestProofId'];
+  return {
+    id,
+    missionId: stringField(row, 'mission_id', 'missionId'),
+    claimant: stringField(row, 'claimant', 'claimant'),
+    claimedAtBlock: numberField(row, 'claimed_at_block', 'claimedAtBlock'),
+    status: normalizeStatus(row['status']),
+    latestProofId: latestProofId == null ? null : String(latestProofId),
+  };
+}
+
+function ownHexes(opts: Pick<VerificationOptions, 'operatorHex' | 'appHex' | 'missionProgramHex'>): Set<string> {
   return new Set(
     [
       opts.operatorHex,
@@ -385,6 +424,48 @@ async function getPendingProofs(limit: number, executor: Executor): Promise<Miss
   return page.items;
 }
 
+async function getClaims(
+  cursor: bigint | null,
+  limit: number,
+  executor: Executor,
+): Promise<ClaimPage> {
+  const parsed = await varaWalletCall(
+    requireEnv('MISSION_PROGRAM_HEX'),
+    'AanMissions/GetClaims',
+    [cursor == null ? null : String(cursor), limit],
+    requireEnv('MISSION_IDL'),
+    30_000,
+    executor,
+  );
+  const result = parsed['result'] as { items?: unknown[]; next_cursor?: string | number | null; nextCursor?: string | number | null } | null;
+  const nextCursor = result?.next_cursor ?? result?.nextCursor;
+  return {
+    items: (result?.items ?? []).map(parseClaim).filter((claim): claim is MissionVerifierClaim => claim != null),
+    nextCursor: nextCursor == null ? null : String(nextCursor),
+  };
+}
+
+async function getProofs(
+  cursor: bigint | null,
+  limit: number,
+  executor: Executor,
+): Promise<ProofPage> {
+  const parsed = await varaWalletCall(
+    requireEnv('MISSION_PROGRAM_HEX'),
+    'AanMissions/GetProofs',
+    [cursor == null ? null : String(cursor), limit],
+    requireEnv('MISSION_IDL'),
+    30_000,
+    executor,
+  );
+  const result = parsed['result'] as { items?: unknown[]; next_cursor?: string | number | null; nextCursor?: string | number | null } | null;
+  const nextCursor = result?.next_cursor ?? result?.nextCursor;
+  return {
+    items: (result?.items ?? []).map(parseProof).filter((proof): proof is MissionVerifierProof => proof != null),
+    nextCursor: nextCursor == null ? null : String(nextCursor),
+  };
+}
+
 async function getMission(missionId: string, executor: Executor): Promise<MissionVerifierMission | null> {
   const parsed = await varaWalletCall(
     requireEnv('MISSION_PROGRAM_HEX'),
@@ -467,12 +548,213 @@ async function postApprovalHighlight(
   });
 }
 
+function truncateUtf8(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
+  let out = s;
+  while (Buffer.byteLength(out + '…', 'utf8') > maxBytes) {
+    out = out.slice(0, -1);
+  }
+  return out + '…';
+}
+
+function missionCode(missionId: string): string {
+  return `M${missionId}`;
+}
+
+function missionTitle(mission: MissionVerifierMission): string {
+  return truncateUtf8(mission.title || missionCode(mission.id), 72);
+}
+
+function nextCursorAfter(lastSeenId: bigint): bigint | null {
+  return lastSeenId === 0n ? null : lastSeenId + 1n;
+}
+
+function parseU64Id(value: string): bigint | null {
+  try {
+    const parsed = BigInt(value);
+    return parsed >= 0n ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveActorDisplay(
+  actorHex: string,
+): Promise<{ handle: string; mentionKind: 'Participant' | 'Application' }> {
+  const application = await fetchApplicationInfo(actorHex);
+  if (application?.handle) {
+    return { handle: application.handle, mentionKind: 'Application' };
+  }
+
+  const handle = await resolveHandle(actorHex);
+  return {
+    handle: handle ?? shortHex(actorHex),
+    mentionKind: 'Participant',
+  };
+}
+
+async function postClaimHighlight(
+  mission: MissionVerifierMission,
+  claim: MissionVerifierClaim,
+): Promise<{ msgId: string; txHash: string }> {
+  await ensureFresh();
+  const actor = await resolveActorDisplay(claim.claimant);
+  const body = truncateUtf8(
+    `AAN Missions claim: @${actor.handle} took ${missionCode(claim.missionId)} ` +
+      `"${missionTitle(mission)}". ${formatVara(mission.reward)} VARA awaits verified proof. #AAN-TV`,
+    240,
+  );
+
+  return postChatAsApplication({
+    body,
+    mentions: [{ kind: actor.mentionKind, hex: claim.claimant }],
+  });
+}
+
+async function postProofSubmissionHighlight(
+  mission: MissionVerifierMission,
+  proof: MissionVerifierProof,
+): Promise<{ msgId: string; txHash: string }> {
+  await ensureFresh();
+  const actor = await resolveActorDisplay(proof.claimant);
+  const body = truncateUtf8(
+    `AAN Missions proof: @${actor.handle} submitted ${missionCode(proof.missionId)} ` +
+      `"${missionTitle(mission)}" for verification. tx:${shortHex(proof.proofTxHash)} #AAN-TV`,
+    240,
+  );
+
+  return postChatAsApplication({
+    body,
+    mentions: [{ kind: actor.mentionKind, hex: proof.claimant }],
+  });
+}
+
+export interface MissionActivitySummary {
+  claimsChecked: number;
+  proofsChecked: number;
+  claimsPosted: number;
+  proofsPosted: number;
+  skipped: number;
+  errors: Array<{ kind: 'claim' | 'proof'; id: string; error: string }>;
+}
+
+async function postMissionActivityHighlights(
+  executor: Executor,
+): Promise<MissionActivitySummary> {
+  const limit = envNumber('MISSION_ACTIVITY_LIMIT', 25);
+  const ownActors = ownHexes({
+    operatorHex: process.env.OPERATOR_HEX,
+    appHex: process.env.APP_HEX,
+    missionProgramHex: process.env.MISSION_PROGRAM_HEX,
+  });
+  const summary: MissionActivitySummary = {
+    claimsChecked: 0,
+    proofsChecked: 0,
+    claimsPosted: 0,
+    proofsPosted: 0,
+    skipped: 0,
+    errors: [],
+  };
+
+  let lastClaimId = getLastSeenMissionClaimId();
+  const claims = await getClaims(nextCursorAfter(lastClaimId), limit, executor);
+  for (const claim of claims.items) {
+    summary.claimsChecked += 1;
+    const claimId = parseU64Id(claim.id);
+    if (claimId == null) {
+      summary.skipped += 1;
+      recordMissionActivity('claim', claim.id, 'skipped', { error: 'invalid claim id' });
+      continue;
+    }
+    if (claimId <= lastClaimId) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    try {
+      if (missionActivityAlreadyProcessed('claim', claim.id)) {
+        summary.skipped += 1;
+      } else if (ownActors.has(claim.claimant.toLowerCase())) {
+        summary.skipped += 1;
+        recordMissionActivity('claim', claim.id, 'skipped', { error: 'own-cluster claimant' });
+      } else {
+        const mission = await getMission(claim.missionId, executor);
+        if (!mission) throw new Error(`mission ${claim.missionId} not found`);
+        const result = await postClaimHighlight(mission, claim);
+        summary.claimsPosted += 1;
+        recordMissionActivity('claim', claim.id, 'ok', {
+          msgId: result.msgId,
+          txHash: result.txHash,
+        });
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      summary.errors.push({ kind: 'claim', id: claim.id, error });
+      recordMissionActivity('claim', claim.id, 'failed', { error });
+    } finally {
+      if (claimId > lastClaimId) {
+        lastClaimId = claimId;
+        setLastSeenMissionClaimId(lastClaimId);
+      }
+    }
+  }
+
+  let lastProofId = getLastSeenMissionProofId();
+  const proofs = await getProofs(nextCursorAfter(lastProofId), limit, executor);
+  for (const proof of proofs.items) {
+    summary.proofsChecked += 1;
+    const proofId = parseU64Id(proof.id);
+    if (proofId == null) {
+      summary.skipped += 1;
+      recordMissionActivity('proof', proof.id, 'skipped', { error: 'invalid proof id' });
+      continue;
+    }
+    if (proofId <= lastProofId) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    try {
+      if (missionActivityAlreadyProcessed('proof', proof.id)) {
+        summary.skipped += 1;
+      } else if (proof.status !== 'Pending') {
+        summary.skipped += 1;
+        recordMissionActivity('proof', proof.id, 'skipped', { error: `proof is ${proof.status}` });
+      } else if (ownActors.has(proof.claimant.toLowerCase())) {
+        summary.skipped += 1;
+        recordMissionActivity('proof', proof.id, 'skipped', { error: 'own-cluster claimant' });
+      } else {
+        const mission = await getMission(proof.missionId, executor);
+        if (!mission) throw new Error(`mission ${proof.missionId} not found`);
+        const result = await postProofSubmissionHighlight(mission, proof);
+        summary.proofsPosted += 1;
+        recordMissionActivity('proof', proof.id, 'ok', {
+          msgId: result.msgId,
+          txHash: result.txHash,
+        });
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      summary.errors.push({ kind: 'proof', id: proof.id, error });
+      recordMissionActivity('proof', proof.id, 'failed', { error });
+    } finally {
+      if (proofId > lastProofId) {
+        lastProofId = proofId;
+        setLastSeenMissionProofId(lastProofId);
+      }
+    }
+  }
+
+  return summary;
+}
+
 export interface MissionVerifierCycleSummary {
   checked: number;
   approved: number;
   rejected: number;
   deferred: number;
   errors: Array<{ proofId: string; error: string }>;
+  activity?: MissionActivitySummary;
 }
 
 export async function runMissionVerifierCycle(
@@ -482,16 +764,36 @@ export async function runMissionVerifierCycle(
 
   const approvalsEnabled = envBool('MISSION_VERIFIER_APPROVALS_ENABLED', false);
   const postHighlights = envBool('MISSION_VERIFIER_POST_HIGHLIGHTS', false);
+  const activityPostsEnabled = envBool('MISSION_ACTIVITY_POSTS_ENABLED', false);
   const limit = envNumber('MISSION_VERIFIER_LIMIT', 25);
   const chainTipBlock = await fetchChainTipBlock();
-  const proofs = await getPendingProofs(limit, executor);
   const summary: MissionVerifierCycleSummary = {
-    checked: proofs.length,
+    checked: 0,
     approved: 0,
     rejected: 0,
     deferred: 0,
     errors: [],
   };
+
+  if (activityPostsEnabled) {
+    try {
+      summary.activity = await postMissionActivityHighlights(executor);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.error(`[mission-verifier] mission activity highlights failed: ${error}`);
+      summary.activity = {
+        claimsChecked: 0,
+        proofsChecked: 0,
+        claimsPosted: 0,
+        proofsPosted: 0,
+        skipped: 0,
+        errors: [{ kind: 'claim', id: 'cycle', error }],
+      };
+    }
+  }
+
+  const proofs = await getPendingProofs(limit, executor);
+  summary.checked = proofs.length;
   const seenProofTxHashes = new Set<string>();
 
   for (const proof of proofs) {
@@ -570,6 +872,7 @@ export async function runMissionVerifierLoop(opts: { intervalMs: number }): Prom
   console.log('[mission-verifier] starting');
   console.log(`[mission-verifier] enabled=${envBool('MISSION_VERIFIER_ENABLED', false)}`);
   console.log(`[mission-verifier] approvals=${envBool('MISSION_VERIFIER_APPROVALS_ENABLED', false)}`);
+  console.log(`[mission-verifier] activity_posts=${envBool('MISSION_ACTIVITY_POSTS_ENABLED', false)}`);
   console.log(`[mission-verifier] interval=${opts.intervalMs}ms`);
 
   // eslint-disable-next-line no-constant-condition

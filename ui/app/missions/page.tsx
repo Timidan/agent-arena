@@ -245,6 +245,7 @@ export default async function MissionsPage() {
                 <EntryRow label="Discover" value="AanMissions/GetOpenMissions [null,10]" />
                 <EntryRow label="Claim" value="AanMissions/ClaimMission [mission_id]" />
                 <EntryRow label="Prove" value='AanMissions/SubmitProof [mission_id,"tx_hash","note"]' />
+                <EntryRow label="Signal" value="@aan-tv can highlight real non-cluster claims and pending proofs" />
                 <EntryRow label="M3 bonus" value="Submit the Mission Control proof tx to infinite-bounty-v3 bounty #9" />
               </div>
             </div>

@@ -5,6 +5,8 @@
  *   lastSeenBlock      — highest Substrate block number processed by watcher
  *   lastSeenCoverageId — highest CoverageRequest id processed from GetCoverageQueue
  *   last_digest_ts     — unix ms timestamp of the last hourly digest post
+ *   lastSeenMissionClaimId — highest Mission Control claim id processed
+ *   lastSeenMissionProofId — highest Mission Control proof id processed
  *
  * All start at 0. The store is lazily initialized on first access.
  *
@@ -21,6 +23,11 @@
 import Database from 'better-sqlite3';
 
 let db: Database.Database | null = null;
+
+export function _resetCheckpointForTesting(): void {
+  db?.close();
+  db = null;
+}
 
 function getDb(): Database.Database {
   if (db) return db;
@@ -57,6 +64,17 @@ function getDb(): Database.Database {
       entry_id  INTEGER NOT NULL,
       posted_at TEXT NOT NULL,
       PRIMARY KEY(caller, entry_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS mission_activity_posts (
+      kind       TEXT NOT NULL CHECK(kind IN ('claim', 'proof')),
+      id         TEXT NOT NULL,
+      status     TEXT NOT NULL CHECK(status IN ('ok', 'failed', 'skipped')),
+      posted_msg_id  TEXT,
+      posted_tx_hash TEXT,
+      error      TEXT,
+      processed_at   INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      PRIMARY KEY(kind, id)
     )
   `);
 
@@ -90,6 +108,57 @@ export function getLastSeenCoverageId(): bigint {
 
 export function setLastSeenCoverageId(id: bigint): void {
   setCheckpoint('lastSeenCoverageId', String(id));
+}
+
+export function getLastSeenMissionClaimId(): bigint {
+  return BigInt(getCheckpoint('lastSeenMissionClaimId', '0'));
+}
+
+export function setLastSeenMissionClaimId(id: bigint): void {
+  setCheckpoint('lastSeenMissionClaimId', String(id));
+}
+
+export function getLastSeenMissionProofId(): bigint {
+  return BigInt(getCheckpoint('lastSeenMissionProofId', '0'));
+}
+
+export function setLastSeenMissionProofId(id: bigint): void {
+  setCheckpoint('lastSeenMissionProofId', String(id));
+}
+
+export type MissionActivityKind = 'claim' | 'proof';
+export type MissionActivityStatus = 'ok' | 'failed' | 'skipped';
+
+export function missionActivityAlreadyProcessed(
+  kind: MissionActivityKind,
+  id: string,
+): boolean {
+  const row = getDb()
+    .prepare('SELECT 1 FROM mission_activity_posts WHERE kind = ? AND id = ?')
+    .get(kind, id);
+  return row !== undefined;
+}
+
+export function recordMissionActivity(
+  kind: MissionActivityKind,
+  id: string,
+  status: MissionActivityStatus,
+  details: { msgId?: string; txHash?: string; error?: string } = {},
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO mission_activity_posts (
+         kind,
+         id,
+         status,
+         posted_msg_id,
+         posted_tx_hash,
+         error
+       )
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(kind, id) DO NOTHING`,
+    )
+    .run(kind, id, status, details.msgId ?? null, details.txHash ?? null, details.error ?? null);
 }
 
 // ── per-interaction dedup helpers (Fix 2) ─────────────────────────────────

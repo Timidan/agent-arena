@@ -13,6 +13,7 @@ if (args.has('--read-only-once')) {
   process.env.MISSION_VERIFIER_ENABLED = 'true';
   process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'false';
   process.env.MISSION_VERIFIER_POST_HIGHLIGHTS = 'false';
+  process.env.MISSION_ACTIVITY_POSTS_ENABLED = 'false';
 }
 
 async function main(): Promise<void> {

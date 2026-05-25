@@ -12,10 +12,12 @@ import {
   fetchApplicationInfo,
   fetchChainTipBlock,
   fetchInteractionByProofHash,
+  resolveHandle,
 } from './indexer.js';
 import { postChatAsApplication, type Executor } from './chat.js';
 import { ensureFresh } from './voucher.js';
 import type { Interaction } from './indexer.js';
+import { _resetCheckpointForTesting } from './checkpoint.js';
 
 vi.mock('./indexer.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./indexer.js')>();
@@ -24,6 +26,7 @@ vi.mock('./indexer.js', async (importOriginal) => {
     fetchApplicationInfo: vi.fn(),
     fetchChainTipBlock: vi.fn(),
     fetchInteractionByProofHash: vi.fn(),
+    resolveHandle: vi.fn(),
   };
 });
 
@@ -95,6 +98,7 @@ const opts = {
 const mockedFetchApplicationInfo = vi.mocked(fetchApplicationInfo);
 const mockedFetchChainTipBlock = vi.mocked(fetchChainTipBlock);
 const mockedFetchInteractionByProofHash = vi.mocked(fetchInteractionByProofHash);
+const mockedResolveHandle = vi.mocked(resolveHandle);
 const mockedEnsureFresh = vi.mocked(ensureFresh);
 const mockedPostChatAsApplication = vi.mocked(postChatAsApplication);
 let tempDir: string | null = null;
@@ -131,6 +135,24 @@ function proofRow(value: MissionVerifierProof) {
   };
 }
 
+function claimRow(value: {
+  id: string;
+  missionId: string;
+  claimant: string;
+  claimedAtBlock: number;
+  status: string;
+  latestProofId?: string | null;
+}) {
+  return {
+    id: value.id,
+    mission_id: value.missionId,
+    claimant: value.claimant,
+    claimed_at_block: value.claimedAtBlock,
+    status: value.status,
+    latest_proof_id: value.latestProofId ?? null,
+  };
+}
+
 function methodFromArgs(args: string[]): string {
   const method = args.find((arg) => arg.startsWith('AanMissions/'));
   if (!method) throw new Error(`missing method in args: ${args.join(' ')}`);
@@ -159,6 +181,14 @@ function makeExecutor(
         items: [proofRow(proof)],
         next_cursor: null,
       },
+      'AanMissions/GetClaims': {
+        items: [],
+        next_cursor: null,
+      },
+      'AanMissions/GetProofs': {
+        items: [],
+        next_cursor: null,
+      },
       'AanMissions/GetMission': missionRow(mission),
       'AanMissions/ApproveProof': {
         proof_id: proof.id,
@@ -185,10 +215,13 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   if (!tempDir) throw new Error('missing tempDir');
-  process.env.CHECKPOINT_DB = join(tempDir, 'checkpoint.sqlite');
+  _resetCheckpointForTesting();
+  process.env.CHECKPOINT_DB = join(tempDir, `checkpoint-${Date.now()}-${Math.random()}.sqlite`);
   process.env.MISSION_VERIFIER_ENABLED = 'true';
   process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'false';
   process.env.MISSION_VERIFIER_POST_HIGHLIGHTS = 'false';
+  process.env.MISSION_ACTIVITY_POSTS_ENABLED = 'false';
+  process.env.MISSION_ACTIVITY_LIMIT = '25';
   process.env.MISSION_VERIFIER_STRICT_METHOD = 'true';
   process.env.MISSION_PROGRAM_HEX = MISSION_PROGRAM;
   process.env.MISSION_IDL = '/tmp/aan_missions_client.idl';
@@ -201,6 +234,7 @@ beforeEach(() => {
   mockedFetchChainTipBlock.mockResolvedValue(160);
   mockedFetchInteractionByProofHash.mockResolvedValue(interaction);
   mockedFetchApplicationInfo.mockResolvedValue(null);
+  mockedResolveHandle.mockResolvedValue('agent-a');
   mockedEnsureFresh.mockResolvedValue('voucher-id');
   mockedPostChatAsApplication.mockResolvedValue({ msgId: '7', txHash: '0xchat' });
 });
@@ -210,6 +244,8 @@ afterEach(() => {
   delete process.env.MISSION_VERIFIER_ENABLED;
   delete process.env.MISSION_VERIFIER_APPROVALS_ENABLED;
   delete process.env.MISSION_VERIFIER_POST_HIGHLIGHTS;
+  delete process.env.MISSION_ACTIVITY_POSTS_ENABLED;
+  delete process.env.MISSION_ACTIVITY_LIMIT;
   delete process.env.MISSION_VERIFIER_STRICT_METHOD;
   delete process.env.MISSION_PROGRAM_HEX;
   delete process.env.MISSION_IDL;
@@ -609,6 +645,105 @@ describe('runMissionVerifierCycle', () => {
       { proofId: proof.id, error: `approval not confirmed for proof ${proof.id}` },
     ]);
     expect(mockedEnsureFresh).not.toHaveBeenCalled();
+    expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
+  });
+
+  it('posts claim and proof-submission highlights for real external mission activity', async () => {
+    process.env.MISSION_ACTIVITY_POSTS_ENABLED = 'true';
+    const executor = makeExecutor({
+      'AanMissions/GetClaims': {
+        items: [claimRow({
+          id: '1001',
+          missionId: mission.id,
+          claimant: CLAIMANT,
+          claimedAtBlock: 151,
+          status: 'Claimed',
+        })],
+        next_cursor: null,
+      },
+      'AanMissions/GetProofs': {
+        items: [proofRow({ ...proof, id: '1001', claimId: '1001', status: 'Pending' })],
+        next_cursor: null,
+      },
+    });
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary?.activity).toMatchObject({
+      claimsChecked: 1,
+      proofsChecked: 1,
+      claimsPosted: 1,
+      proofsPosted: 1,
+      skipped: 0,
+      errors: [],
+    });
+    expect(mockedEnsureFresh).toHaveBeenCalledTimes(2);
+    expect(mockedPostChatAsApplication).toHaveBeenNthCalledWith(1, {
+      body: expect.stringContaining('AAN Missions claim: @agent-a took M1'),
+      mentions: [{ kind: 'Participant', hex: CLAIMANT }],
+    });
+    expect(mockedPostChatAsApplication).toHaveBeenNthCalledWith(2, {
+      body: expect.stringContaining('AAN Missions proof: @agent-a submitted M1'),
+      mentions: [{ kind: 'Participant', hex: CLAIMANT }],
+    });
+  });
+
+  it('does not post mission activity highlights for our own operator', async () => {
+    process.env.MISSION_ACTIVITY_POSTS_ENABLED = 'true';
+    process.env.OPERATOR_HEX = CLAIMANT;
+    const executor = makeExecutor({
+      'AanMissions/GetClaims': {
+        items: [claimRow({
+          id: '2001',
+          missionId: mission.id,
+          claimant: CLAIMANT,
+          claimedAtBlock: 151,
+          status: 'Claimed',
+        })],
+        next_cursor: null,
+      },
+      'AanMissions/GetProofs': {
+        items: [proofRow({ ...proof, id: '2001', claimId: '2001', status: 'Pending' })],
+        next_cursor: null,
+      },
+    });
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary?.activity).toMatchObject({
+      claimsChecked: 1,
+      proofsChecked: 1,
+      claimsPosted: 0,
+      proofsPosted: 0,
+      skipped: 2,
+      errors: [],
+    });
+    expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
+  });
+
+  it('continues proof verification when mission activity reads fail', async () => {
+    process.env.MISSION_ACTIVITY_POSTS_ENABLED = 'true';
+    const fallback = makeExecutor();
+    const executor: Executor = vi.fn(async (command, args, opts) => {
+      if (methodFromArgs(args) === 'AanMissions/GetClaims') {
+        throw new Error('temporary mission activity read failure');
+      }
+      return fallback(command, args, opts);
+    });
+
+    const summary = await runMissionVerifierCycle(executor);
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      approved: 1,
+      rejected: 0,
+      deferred: 0,
+    });
+    expect(summary?.activity?.errors[0]).toMatchObject({
+      kind: 'claim',
+      id: 'cycle',
+      error: 'temporary mission activity read failure',
+    });
     expect(mockedPostChatAsApplication).not.toHaveBeenCalled();
   });
 });

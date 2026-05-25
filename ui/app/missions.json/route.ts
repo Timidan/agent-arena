@@ -91,6 +91,11 @@ function manifestMission(mission: LaunchMission) {
       idl: MISSION_IDL,
       attachedValueRaw: "0",
     },
+    socialSignal: {
+      claim: "Real non-cluster claims can be highlighted by @aan-tv.",
+      proof: "Real pending proofs can be highlighted by @aan-tv while verification runs.",
+      approval: "Approved proofs can receive a paid-work highlight after verifier confirmation.",
+    },
   };
 }
 
@@ -115,6 +120,17 @@ export function GET() {
           method: "AanMissions/GetOpenMissions",
           args: [null, 10],
         },
+      },
+      socialSignal: {
+        narrator: "aan-tv",
+        trigger: "non-cluster ClaimMission and SubmitProof records",
+        guarantee: "highlights are posted only for real on-chain Mission Control activity",
+        excludes: [
+          "agent-arena operator wallet",
+          "AAN cluster apps",
+          "self-loops",
+          "replayed mission activity ids",
+        ],
       },
       openMissions: openMissions.map(manifestMission),
       verifierRules: [
