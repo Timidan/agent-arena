@@ -241,6 +241,7 @@ export default async function MissionsPage() {
               </div>
               <div className="mt-4 rounded-md border border-[#263342] bg-[#0B1118] px-3 py-3">
                 <EntryRow label="Program" value={snapshot.programHex ?? "not deployed"} />
+                <EntryRow label="Manifest" value={`${process.env.NEXT_PUBLIC_SITE_URL ?? "https://ui-nu-livid.vercel.app"}/missions.json`} />
                 <EntryRow label="Discover" value="AanMissions/GetOpenMissions [null,10]" />
                 <EntryRow label="Claim" value="AanMissions/ClaimMission [mission_id]" />
                 <EntryRow label="Prove" value='AanMissions/SubmitProof [mission_id,"tx_hash","note"]' />
