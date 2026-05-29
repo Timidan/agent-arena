@@ -113,10 +113,21 @@ function normalizeProofTxHash(value: string): string {
   return value.trim().toLowerCase();
 }
 
+const PROOF_TX_HASH_PATTERN = /^0x[0-9a-f]{64}$/;
+
+export function isValidProofTxHash(value: string): boolean {
+  return PROOF_TX_HASH_PATTERN.test(normalizeProofTxHash(value));
+}
+
 function normalizeStatus(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>);
+    const obj = value as Record<string, unknown>;
+    // Sails inner-tagged enum: { kind: "VariantName", ... }
+    // (e.g. ProofStatus from the contract returns { kind: "Pending" })
+    if (typeof obj.kind === 'string') return obj.kind;
+    // Sails outer-tagged enum fallback: { VariantName: null } or { VariantName: payload }
+    const keys = Object.keys(obj);
     return keys[0] ?? '';
   }
   return '';
@@ -258,6 +269,13 @@ export function evaluateProof(
 
   if (mission.closed) {
     return { action: 'reject', reason: 'mission is closed' };
+  }
+
+  if (!isValidProofTxHash(proof.proofTxHash)) {
+    return {
+      action: 'reject',
+      reason: 'proof_tx_hash must be a 0x-prefixed 64-char hex string; resubmit with the hex form of the tx hash',
+    };
   }
 
   if (!interaction) {

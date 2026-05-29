@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   evaluateProof,
+  parseClaim,
+  parseProof,
   runMissionVerifierCycle,
   type MissionVerifierMission,
   type MissionVerifierProof,
@@ -63,19 +65,21 @@ const mission: MissionVerifierMission = {
   closed: false,
 };
 
+const VALID_PROOF_TX_HASH = '0x' + 'ab'.repeat(32);
+
 const proof: MissionVerifierProof = {
   id: '1',
   missionId: '1',
   claimId: '1',
   claimant: CLAIMANT,
-  proofTxHash: '0xabc',
+  proofTxHash: VALID_PROOF_TX_HASH,
   note: 'done',
   submittedAtBlock: 150,
   status: 'Pending',
 };
 
 const interaction: Interaction = {
-  id: 'interaction:0xabc',
+  id: `interaction:${VALID_PROOF_TX_HASH}`,
   blockNumber: 150,
   caller: CLAIMANT,
   callerHandle: 'agent-a',
@@ -262,6 +266,66 @@ afterAll(() => {
   tempDir = null;
 });
 
+describe('parseProof / parseClaim status normalization', () => {
+  it('reads Sails inner-tagged ProofStatus {kind: "Pending"} as "Pending"', () => {
+    const parsed = parseProof({
+      id: '7',
+      mission_id: '1',
+      claim_id: '3',
+      claimant: CLAIMANT,
+      proof_tx_hash: VALID_PROOF_TX_HASH,
+      note: 'real proof from chain',
+      submitted_at_block: 150,
+      status: { kind: 'Pending' },
+    });
+    expect(parsed?.status).toBe('Pending');
+  });
+
+  it('reads Sails outer-tagged ProofStatus {Approved: null} as "Approved" (fallback)', () => {
+    const parsed = parseProof({
+      id: '8',
+      mission_id: '1',
+      claim_id: '4',
+      claimant: CLAIMANT,
+      proof_tx_hash: VALID_PROOF_TX_HASH,
+      note: 'fallback shape',
+      submitted_at_block: 151,
+      status: { Approved: null },
+    });
+    expect(parsed?.status).toBe('Approved');
+  });
+
+  it('reads ClaimStatus {kind: "ProofPending"} as "ProofPending"', () => {
+    const parsed = parseClaim({
+      id: '2',
+      mission_id: '1',
+      claimant: CLAIMANT,
+      claimed_at_block: 120,
+      status: { kind: 'ProofPending' },
+      latest_proof_id: '7',
+    });
+    expect(parsed?.status).toBe('ProofPending');
+  });
+
+  it('passes a Pending {kind:"Pending"} proof through the status check (does not defer as "kind")', () => {
+    // Regression: pre-fix normalizeStatus returned "kind" for {kind:"Pending"},
+    // causing evaluateProof to defer every proof with reason "proof is kind".
+    const parsed = parseProof({
+      id: '9',
+      mission_id: '1',
+      claim_id: '5',
+      claimant: CLAIMANT,
+      proof_tx_hash: VALID_PROOF_TX_HASH,
+      note: 'regression',
+      submitted_at_block: 150,
+      status: { kind: 'Pending' },
+    });
+    const decision = evaluateProof(parsed!, mission, interaction, opts);
+    expect(decision.action).toBe('approve');
+    expect(decision.reason).not.toContain('proof is kind');
+  });
+});
+
 describe('evaluateProof', () => {
   it('approves an indexed interaction that matches claimant, target, method, and window', () => {
     const decision = evaluateProof(proof, mission, interaction, opts);
@@ -276,6 +340,27 @@ describe('evaluateProof', () => {
   it('rejects a missing interaction after the indexer lag window', () => {
     const decision = evaluateProof(proof, mission, null, { ...opts, chainTipBlock: 10_000 });
     expect(decision.action).toBe('reject');
+  });
+
+  it('rejects a proof_tx_hash that is not 0x-prefixed 64-char hex with submitter-actionable reason', () => {
+    const malformed = { ...proof, proofTxHash: 'not-a-hex-string' };
+    const decision = evaluateProof(malformed, mission, null, opts);
+    expect(decision.action).toBe('reject');
+    expect(decision.reason).toContain('0x-prefixed 64-char hex');
+  });
+
+  it('rejects a proof_tx_hash with the right shape but invalid characters', () => {
+    const malformed = { ...proof, proofTxHash: '0x' + 'zz'.repeat(32) };
+    const decision = evaluateProof(malformed, mission, null, opts);
+    expect(decision.action).toBe('reject');
+    expect(decision.reason).toContain('0x-prefixed 64-char hex');
+  });
+
+  it('rejects raw-bytes proof_tx_hash submissions (the prov-escrow/agent-trust-layer bug)', () => {
+    const malformed = { ...proof, proofTxHash: '�6�U�o�/' };
+    const decision = evaluateProof(malformed, mission, null, opts);
+    expect(decision.action).toBe('reject');
+    expect(decision.reason).toContain('resubmit with the hex form');
   });
 
   it('rejects a caller mismatch', () => {
@@ -434,7 +519,7 @@ describe('runMissionVerifierCycle', () => {
   });
 
   it('rejects duplicate proof tx hashes in read-only mode without write calls', async () => {
-    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: ' 0XABC ' };
+    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: ` ${VALID_PROOF_TX_HASH.toUpperCase()} ` };
     const walletCalls: WalletCall[] = [];
     const executor = makeExecutor(
       {
@@ -490,7 +575,7 @@ describe('runMissionVerifierCycle', () => {
     process.env.MISSION_VERIFIER_APPROVALS_ENABLED = 'true';
     process.env.MAX_DAILY_MISSION_VERIFIER_CALLS = '20';
     process.env.MISSION_VERIFIER_ESTIMATED_SPEND_RAW = '0';
-    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: '0XABC' };
+    const duplicateProof = { ...proof, id: '2', claimId: '2', proofTxHash: VALID_PROOF_TX_HASH.toUpperCase() };
     const walletCalls: WalletCall[] = [];
     const executor = makeExecutor(
       {

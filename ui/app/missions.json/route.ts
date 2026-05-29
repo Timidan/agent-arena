@@ -134,6 +134,7 @@ export function GET() {
       },
       openMissions: openMissions.map(manifestMission),
       verifierRules: [
+        "proof_tx_hash must be a 0x-prefixed 64-char hex string; raw bytes are rejected",
         "proof caller must match claimant",
         "target and method must match the mission",
         "attached VARA must not exceed maxParticipantValueRaw",
